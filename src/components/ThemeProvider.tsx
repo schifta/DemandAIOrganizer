@@ -14,6 +14,7 @@ export type FontScale = (typeof FONT_SCALES)[number];
 
 const THEME_STORAGE_KEY = "eco_theme";
 const FONT_STORAGE_KEY = "eco_font_scale";
+const SOUND_STORAGE_KEY = "eco_sound_enabled";
 
 interface PreferencesContextValue {
   theme: ThemeMode;
@@ -22,6 +23,8 @@ interface PreferencesContextValue {
   increaseFont: () => void;
   decreaseFont: () => void;
   resetFont: () => void;
+  soundEnabled: boolean;
+  toggleSound: () => void;
 }
 
 const PreferencesContext = createContext<PreferencesContextValue | undefined>(
@@ -37,6 +40,7 @@ function isValidFontScale(value: string | null): value is FontScale {
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setTheme] = useState<ThemeMode>("light");
   const [fontScale, setFontScale] = useState<FontScale>("100%");
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -53,8 +57,12 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       ? savedScale
       : "100%";
 
+    const savedSound = localStorage.getItem(SOUND_STORAGE_KEY);
+    const initialSound = savedSound === "false" ? false : true;
+
     setTheme(initialTheme);
     setFontScale(initialScale);
+    setSoundEnabled(initialSound);
     setMounted(true);
   }, []);
 
@@ -75,8 +83,17 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     localStorage.setItem(FONT_STORAGE_KEY, fontScale);
   }, [fontScale, mounted]);
 
+  useEffect(() => {
+    if (!mounted) return;
+    localStorage.setItem(SOUND_STORAGE_KEY, String(soundEnabled));
+  }, [soundEnabled, mounted]);
+
   const toggleTheme = useCallback(() => {
     setTheme((prev) => (prev === "dark" ? "light" : "dark"));
+  }, []);
+
+  const toggleSound = useCallback(() => {
+    setSoundEnabled((prev) => !prev);
   }, []);
 
   const increaseFont = useCallback(() => {
@@ -106,6 +123,8 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
         increaseFont,
         decreaseFont,
         resetFont,
+        soundEnabled,
+        toggleSound,
       }}
     >
       {children}

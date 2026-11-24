@@ -11,6 +11,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { AccessKeyItem } from "@/types";
+import { authFetch } from "@/lib/client-auth";
 
 interface AccessKeyPanelProps {
   accessKeys: AccessKeyItem[];
@@ -55,7 +56,7 @@ export function AccessKeyPanel({
     setError(null);
     setCreating(true);
     try {
-      const res = await fetch("/api/access-keys", {
+      const res = await authFetch("/api/access-keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ roleToGrant }),

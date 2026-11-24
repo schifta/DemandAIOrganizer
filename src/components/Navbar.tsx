@@ -10,9 +10,12 @@ import {
   Sun,
   Truck,
   User as UserIcon,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { AuthUser, UserRole } from "@/types";
 import { FONT_SCALES, usePreferences } from "@/components/ThemeProvider";
+import { clearSession } from "@/lib/client-auth";
 
 interface NavbarProps {
   user: AuthUser;
@@ -35,8 +38,16 @@ const ROLE_BADGE_STYLES: Record<UserRole, string> = {
 
 export function Navbar({ user }: NavbarProps) {
   const router = useRouter();
-  const { theme, toggleTheme, fontScale, increaseFont, decreaseFont, resetFont } =
-    usePreferences();
+  const {
+    theme,
+    toggleTheme,
+    fontScale,
+    increaseFont,
+    decreaseFont,
+    resetFont,
+    soundEnabled,
+    toggleSound,
+  } = usePreferences();
   const [loggingOut, setLoggingOut] = useState(false);
 
   const isMinFont = fontScale === FONT_SCALES[0];
@@ -47,6 +58,7 @@ export function Navbar({ user }: NavbarProps) {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
     } finally {
+      clearSession();
       router.push("/login");
       router.refresh();
     }
@@ -115,6 +127,38 @@ export function Navbar({ user }: NavbarProps) {
               </button>
             )}
           </div>
+
+          {/* Sound Toggle */}
+          <button
+            type="button"
+            onClick={toggleSound}
+            aria-label={
+              soundEnabled
+                ? "Silenciar notificações"
+                : "Ativar som de notificações"
+            }
+            title={
+              soundEnabled
+                ? "Silenciar notificações"
+                : "Ativar som de notificações"
+            }
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 shadow-xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+          >
+            {soundEnabled ? (
+              <>
+                <Volume2
+                  className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400"
+                  aria-hidden="true"
+                />
+                <span>Som</span>
+              </>
+            ) : (
+              <>
+                <VolumeX className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+                <span>Silenciar</span>
+              </>
+            )}
+          </button>
 
           {/* Theme Toggle */}
           <button

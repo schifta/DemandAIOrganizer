@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import { SignJWT, jwtVerify } from "jose";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
@@ -95,9 +95,27 @@ export function clearSessionCookie(response: NextResponse): void {
   });
 }
 
-export async function getSessionUser(): Promise<SessionPayload | null> {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
+export async function getSessionUser(
+  tokenOverride?: string
+): Promise<SessionPayload | null> {
+  let token = tokenOverride?.trim() || undefined;
+
+  if (!token) {
+    const headerStore = await headers();
+    const authHeader = headerStore.get("authorization");
+    if (authHeader) {
+      const match = authHeader.match(/^Bearer\s+(.+)$/i);
+      if (match?.[1]) {
+        token = match[1].trim();
+      }
+    }
+  }
+
+  if (!token) {
+    const cookieStore = await cookies();
+    token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
+  }
+
   if (!token) {
     return null;
   }

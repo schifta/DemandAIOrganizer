@@ -69,6 +69,7 @@ export async function POST(request: Request) {
         email: user.email,
         role,
       },
+      token,
     });
     setSessionCookie(response, token);
 

@@ -139,6 +139,7 @@ export async function POST(request: Request) {
           email: newUser.email,
           role,
         },
+        token,
       },
       { status: 201 }
     );

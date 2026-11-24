@@ -1,6 +1,12 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -15,6 +21,18 @@ import { Navbar } from "@/components/Navbar";
 import { OrderQueue } from "@/components/OrderQueue";
 import { AccessKeyPanel } from "@/components/AccessKeyPanel";
 import { WebhookSimulator } from "@/components/WebhookSimulator";
+import {
+  NotificationToast,
+  ToastItem,
+} from "@/components/NotificationToast";
+import { usePreferences } from "@/components/ThemeProvider";
+import {
+  authFetch,
+  clearSession,
+  getStoredToken,
+  getStoredUser,
+} from "@/lib/client-auth";
+import { playNotificationSound } from "@/lib/notification-sound";
 import {
   AccessKeyItem,
   AuthUser,
@@ -35,6 +53,7 @@ const FILTER_PILLS: { id: FilterOption; label: string }[] = [
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { soundEnabled } = usePreferences();
 
   const [user, setUser] = useState<AuthUser | null>(null);
   const [orders, setOrders] = useState<OrderItem[]>([]);
@@ -45,6 +64,90 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterOption>("ALL");
   const [simulatorOpen, setSimulatorOpen] = useState(false);
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  const knownOrderIdsRef = useRef<Set<string>>(new Set());
+  const soundEnabledRef = useRef<boolean>(soundEnabled);
+  const toastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map()
+  );
+
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+
+  useEffect(() => {
+    const timers = toastTimersRef.current;
+    return () => {
+      timers.forEach((timer) => clearTimeout(timer));
+      timers.clear();
+    };
+  }, []);
+
+  const dismissToast = useCallback((id: string) => {
+    const existingTimer = toastTimersRef.current.get(id);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+      toastTimersRef.current.delete(id);
+    }
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const handleIncomingOrder = useCallback(
+    (newOrder: OrderItem) => {
+      if (knownOrderIdsRef.current.has(newOrder.id)) {
+        return;
+      }
+      knownOrderIdsRef.current.add(newOrder.id);
+
+      setOrders((prev) => {
+        if (prev.some((o) => o.id === newOrder.id)) {
+          return prev;
+        }
+        return [...prev, newOrder].sort(
+          (a, b) => a.priorityOrder - b.priorityOrder
+        );
+      });
+
+      const summary = `${newOrder.company?.name ?? newOrder.requesterName} — ${
+        newOrder.actionType === "TROCA" ? "Troca" : "Coleta"
+      } de ${newOrder.quantity} ${
+        newOrder.containerType === "TAMBOR" ? "Tambor(es)" : "Caixa(s)"
+      }`;
+
+      const toast: ToastItem = {
+        id: newOrder.id,
+        title: "Novo pedido recebido",
+        message: summary,
+        createdAt: Date.now(),
+      };
+
+      setToasts((prev) => [...prev, toast]);
+
+      const timer = setTimeout(() => {
+        toastTimersRef.current.delete(newOrder.id);
+        setToasts((prev) => prev.filter((t) => t.id !== newOrder.id));
+      }, 7000);
+      toastTimersRef.current.set(newOrder.id, timer);
+
+      if (soundEnabledRef.current) {
+        playNotificationSound();
+      }
+
+      if (
+        typeof window !== "undefined" &&
+        "Notification" in window &&
+        Notification.permission === "granted"
+      ) {
+        try {
+          new Notification("Novo pedido — EcoColetas", { body: summary });
+        } catch {
+          // Ignore browser notification errors
+        }
+      }
+    },
+    []
+  );
 
   const isAdmin = user?.role === "ADMIN_MASTER" || user?.role === "ADMIN";
 
@@ -54,12 +157,13 @@ export default function DashboardPage() {
         currentUser.role === "ADMIN_MASTER" || currentUser.role === "ADMIN";
 
       const [ordersRes, companiesRes, keysRes] = await Promise.all([
-        fetch("/api/orders"),
-        fetch("/api/companies"),
-        admin ? fetch("/api/access-keys") : Promise.resolve(null),
+        authFetch("/api/orders"),
+        authFetch("/api/companies"),
+        admin ? authFetch("/api/access-keys") : Promise.resolve(null),
       ]);
 
       if (ordersRes.status === 401 || companiesRes.status === 401) {
+        clearSession();
         router.push("/login");
         return;
       }
@@ -76,6 +180,7 @@ export default function DashboardPage() {
         companies: CompanyItem[];
       };
 
+      knownOrderIdsRef.current = new Set(ordersData.orders.map((o) => o.id));
       setOrders(ordersData.orders);
       setCompanies(companiesData.companies);
 
@@ -93,9 +198,15 @@ export default function DashboardPage() {
     let active = true;
 
     async function init() {
+      const storedUser = getStoredUser();
+      if (storedUser) {
+        setUser(storedUser);
+      }
+
       try {
-        const meRes = await fetch("/api/auth/me");
+        const meRes = await authFetch("/api/auth/me");
         if (meRes.status === 401 || !meRes.ok) {
+          clearSession();
           router.push("/login");
           return;
         }
@@ -104,6 +215,14 @@ export default function DashboardPage() {
 
         setUser(meData.user);
         await fetchDashboardData(meData.user);
+
+        if (
+          typeof window !== "undefined" &&
+          "Notification" in window &&
+          Notification.permission === "default"
+        ) {
+          void Notification.requestPermission().catch(() => {});
+        }
       } catch {
         if (active) {
           setError("Não foi possível carregar os dados do painel.");
@@ -121,6 +240,58 @@ export default function DashboardPage() {
     };
   }, [fetchDashboardData, router]);
 
+  useEffect(() => {
+    if (!user) return;
+
+    const token = getStoredToken();
+    const streamUrl = token
+      ? `/api/orders/stream?token=${encodeURIComponent(token)}`
+      : "/api/orders/stream";
+
+    let eventSource: EventSource | null = null;
+    try {
+      eventSource = new EventSource(streamUrl);
+      eventSource.addEventListener("new-order", (event: MessageEvent) => {
+        try {
+          const newOrder = JSON.parse(event.data) as OrderItem;
+          handleIncomingOrder(newOrder);
+        } catch {
+          // Ignore malformed SSE payload
+        }
+      });
+    } catch {
+      // Ignore EventSource initialization error; fallback poll remains active
+    }
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await authFetch("/api/orders");
+        if (res.status === 401) {
+          clearSession();
+          router.push("/login");
+          return;
+        }
+        if (!res.ok) return;
+
+        const data = (await res.json()) as { orders: OrderItem[] };
+        for (const order of data.orders) {
+          if (!knownOrderIdsRef.current.has(order.id)) {
+            handleIncomingOrder(order);
+          }
+        }
+      } catch {
+        // Ignore transient poll errors
+      }
+    }, 8000);
+
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+      clearInterval(pollInterval);
+    };
+  }, [user, handleIncomingOrder, router]);
+
   async function handleRefresh() {
     if (!user) return;
     setRefreshing(true);
@@ -135,7 +306,7 @@ export default function DashboardPage() {
   }
 
   async function handleRefreshAccessKeys() {
-    const res = await fetch("/api/access-keys");
+    const res = await authFetch("/api/access-keys");
     if (res.ok) {
       const data = (await res.json()) as { accessKeys: AccessKeyItem[] };
       setAccessKeys(data.accessKeys);
@@ -149,7 +320,7 @@ export default function DashboardPage() {
       prev.map((o) => (o.id === orderId ? { ...o, status } : o))
     );
 
-    const res = await fetch(`/api/orders/${orderId}`, {
+    const res = await authFetch(`/api/orders/${orderId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
@@ -168,7 +339,7 @@ export default function DashboardPage() {
 
   async function handleLinkCompany(orderId: string, companyId: string) {
     setError(null);
-    const res = await fetch(`/api/orders/${orderId}`, {
+    const res = await authFetch(`/api/orders/${orderId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ companyId, needsReview: false }),
@@ -189,7 +360,7 @@ export default function DashboardPage() {
     const previous = orders;
     setOrders((prev) => prev.filter((o) => o.id !== orderId));
 
-    const res = await fetch(`/api/orders/${orderId}`, {
+    const res = await authFetch(`/api/orders/${orderId}`, {
       method: "DELETE",
     });
 
@@ -208,7 +379,7 @@ export default function DashboardPage() {
     setOrders(withUpdatedPriority);
 
     try {
-      const res = await fetch("/api/orders/reorder", {
+      const res = await authFetch("/api/orders/reorder", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -480,6 +651,8 @@ export default function DashboardPage() {
           }
         }}
       />
+
+      <NotificationToast toasts={toasts} onDismiss={dismissToast} />
     </div>
   );
 }

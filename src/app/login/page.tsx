@@ -1,6 +1,6 @@
 "use client";
 
-import React, { FormEvent, useState } from "react";
+import React, { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
@@ -15,6 +15,13 @@ import {
   UserPlus,
 } from "lucide-react";
 import { FONT_SCALES, usePreferences } from "@/components/ThemeProvider";
+import {
+  authFetch,
+  clearSession,
+  getStoredToken,
+  saveSession,
+} from "@/lib/client-auth";
+import { AuthUser } from "@/types";
 
 type AuthTab = "login" | "register";
 
@@ -40,6 +47,30 @@ export default function LoginPage() {
   const isMinFont = fontScale === FONT_SCALES[0];
   const isMaxFont = fontScale === FONT_SCALES[FONT_SCALES.length - 1];
 
+  useEffect(() => {
+    const token = getStoredToken();
+    if (!token) return;
+
+    let active = true;
+    authFetch("/api/auth/me")
+      .then((res) => {
+        if (!active) return;
+        if (res.ok) {
+          router.replace("/");
+          router.refresh();
+        } else if (res.status === 401) {
+          clearSession();
+        }
+      })
+      .catch(() => {
+        // Ignore connection error during initial session check
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [router]);
+
   function switchTab(nextTab: AuthTab) {
     setTab(nextTab);
     setError(null);
@@ -60,11 +91,19 @@ export default function LoginPage() {
         }),
       });
 
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        token?: string;
+        user?: AuthUser;
+      };
 
       if (!res.ok) {
         setError(data.error || "Não foi possível entrar. Verifique seus dados.");
         return;
+      }
+
+      if (data.token && data.user) {
+        saveSession(data.token, data.user);
       }
 
       router.push("/");
@@ -98,7 +137,11 @@ export default function LoginPage() {
         }),
       });
 
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        token?: string;
+        user?: AuthUser;
+      };
 
       if (!res.ok) {
         setError(
@@ -106,6 +149,10 @@ export default function LoginPage() {
             "Não foi possível concluir o cadastro. Verifique a Key de acesso."
         );
         return;
+      }
+
+      if (data.token && data.user) {
+        saveSession(data.token, data.user);
       }
 
       router.push("/");

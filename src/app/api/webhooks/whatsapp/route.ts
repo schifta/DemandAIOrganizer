@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseWhatsAppPayload, normalizePhone } from "@/lib/whatsapp-parser";
 import { extractOrderWithNLP } from "@/lib/nlp-extractor";
+import { emitNewOrder } from "@/lib/order-events";
 
 function normalizeForMatch(value: string): string {
   return value
@@ -188,6 +189,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       company: true,
     },
   });
+
+  emitNewOrder(order);
 
   return NextResponse.json(
     {
