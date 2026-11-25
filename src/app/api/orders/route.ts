@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAuth } from "@/lib/auth";
+import { cleanupExpiredRecords } from "@/lib/cleanup";
 
 export async function GET() {
   try {
@@ -8,6 +9,8 @@ export async function GET() {
     if ("error" in auth) {
       return auth.error;
     }
+
+    await cleanupExpiredRecords();
 
     const orders = await prisma.order.findMany({
       orderBy: [{ priorityOrder: "asc" }, { createdAt: "asc" }],

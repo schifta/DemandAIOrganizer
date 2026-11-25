@@ -1,19 +1,27 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import {
-  hashPassword,
-  setSessionCookie,
-  signSessionToken,
-  UserRole,
-} from "@/lib/auth";
+import { hashPassword } from "@/lib/auth";
+import { cleanupExpiredRecords } from "@/lib/cleanup";
 
-class RegistrationError extends Error {
-  status: number;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DAILY_LIMIT = 3;
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
+function getSaoPauloStartOfDayUtc(): Date {
+  const now = new Date();
+  const spOffsetMs = 3 * 60 * 60 * 1000;
+  const spNow = new Date(now.getTime() - spOffsetMs);
+  return new Date(
+    Date.UTC(
+      spNow.getUTCFullYear(),
+      spNow.getUTCMonth(),
+      spNow.getUTCDate(),
+      3,
+      0,
+      0,
+      0
+    )
+  );
 }
 
 export async function POST(request: Request) {
@@ -26,11 +34,10 @@ export async function POST(request: Request) {
       );
     }
 
-    const { name, email, password, accessKey } = body as {
+    const { name, email, password } = body as {
       name?: unknown;
       email?: unknown;
       password?: unknown;
-      accessKey?: unknown;
     };
 
     if (
@@ -38,12 +45,20 @@ export async function POST(request: Request) {
       !name.trim() ||
       typeof email !== "string" ||
       !email.trim() ||
-      typeof accessKey !== "string" ||
-      !accessKey.trim() ||
       typeof password !== "string"
     ) {
       return NextResponse.json(
-        { error: "Nome, e-mail, senha e key de acesso são obrigatórios" },
+        { error: "Nome, e-mail e senha são obrigatórios" },
+        { status: 400 }
+      );
+    }
+
+    const normalizedName = name.trim();
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!EMAIL_REGEX.test(normalizedEmail)) {
+      return NextResponse.json(
+        { error: "E-mail inválido" },
         { status: 400 }
       );
     }
@@ -55,108 +70,76 @@ export async function POST(request: Request) {
       );
     }
 
-    const normalizedName = name.trim();
-    const normalizedEmail = email.trim().toLowerCase();
-    const normalizedKey = accessKey.trim().toUpperCase();
-    const passwordHash = await hashPassword(password);
+    await cleanupExpiredRecords(true);
 
-    const newUser = await prisma.$transaction(async (tx) => {
-      const existingUser = await tx.user.findUnique({
-        where: { email: normalizedEmail },
-        select: { id: true },
-      });
-
-      if (existingUser) {
-        throw new RegistrationError(409, "E-mail já cadastrado");
-      }
-
-      const keyRecord = await tx.accessKey.findUnique({
-        where: { code: normalizedKey },
-      });
-
-      if (!keyRecord) {
-        throw new RegistrationError(400, "Key de acesso inválida");
-      }
-
-      if (keyRecord.usedAt !== null) {
-        throw new RegistrationError(403, "Key de acesso já utilizada");
-      }
-
-      const now = new Date();
-      if (keyRecord.expiresAt <= now) {
-        throw new RegistrationError(
-          403,
-          "Key de acesso expirada (validade de 5 minutos)"
-        );
-      }
-
-      const createdUser = await tx.user.create({
-        data: {
-          name: normalizedName,
-          email: normalizedEmail,
-          passwordHash,
-          role: keyRecord.roleToGrant,
-        },
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          role: true,
-        },
-      });
-
-      const updated = await tx.accessKey.updateMany({
-        where: {
-          id: keyRecord.id,
-          usedAt: null,
-        },
-        data: {
-          usedAt: now,
-          usedById: createdUser.id,
-        },
-      });
-
-      if (updated.count === 0) {
-        throw new RegistrationError(403, "Key de acesso já utilizada");
-      }
-
-      return createdUser;
+    const existingUser = await prisma.user.findUnique({
+      where: { email: normalizedEmail },
+      select: { id: true },
     });
 
-    const role = newUser.role as UserRole;
-    const token = await signSessionToken({
-      userId: newUser.id,
-      email: newUser.email,
-      name: newUser.name,
-      role,
-    });
-
-    const response = NextResponse.json(
-      {
-        user: {
-          id: newUser.id,
-          name: newUser.name,
-          email: newUser.email,
-          role,
-        },
-        token,
-      },
-      { status: 201 }
-    );
-    setSessionCookie(response, token);
-
-    return response;
-  } catch (error) {
-    if (error instanceof RegistrationError) {
+    if (existingUser) {
       return NextResponse.json(
-        { error: error.message },
-        { status: error.status }
+        { error: "Este e-mail já está cadastrado" },
+        { status: 409 }
       );
     }
 
+    const existingPendingRequest = await prisma.registrationRequest.findFirst({
+      where: {
+        email: normalizedEmail,
+        status: "PENDING",
+      },
+      select: { id: true },
+    });
+
+    if (existingPendingRequest) {
+      return NextResponse.json(
+        { error: "Já existe uma solicitação pendente para este e-mail" },
+        { status: 409 }
+      );
+    }
+
+    const startOfDayUtc = getSaoPauloStartOfDayUtc();
+    const usedToday = await prisma.registrationRequest.count({
+      where: { createdAt: { gte: startOfDayUtc } },
+    });
+
+    if (usedToday >= DAILY_LIMIT) {
+      return NextResponse.json(
+        {
+          error:
+            "Limite diário de 3 solicitações de cadastro atingido. Tente novamente amanhã.",
+        },
+        { status: 429 }
+      );
+    }
+
+    const passwordHash = await hashPassword(password);
+
+    await prisma.registrationRequest.create({
+      data: {
+        name: normalizedName,
+        email: normalizedEmail,
+        passwordHash,
+        requestedRole: "OPERATOR",
+        status: "PENDING",
+        expiresAt: new Date(Date.now() + TWENTY_FOUR_HOURS_MS),
+      },
+    });
+
+    return NextResponse.json(
+      {
+        ok: true,
+        pendingApproval: true,
+        message:
+          "Solicitação enviada! Aguarde a aprovação de qualquer administrador (válida por 24h).",
+      },
+      { status: 201 }
+    );
+  } catch (error) {
     console.error("Registration error:", error);
     return NextResponse.json(
-      { error: "Erro interno ao registrar usuário" },
+      { error: "Erro interno ao registrar solicitação" },
       { status: 500 }
     );
   }

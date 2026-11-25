@@ -10,6 +10,7 @@ import React, {
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
+  Calendar,
   ClipboardList,
   Clock,
   Loader2,
@@ -18,8 +19,8 @@ import {
   Truck,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
-import { OrderQueue } from "@/components/OrderQueue";
-import { AccessKeyPanel } from "@/components/AccessKeyPanel";
+import { OrderQueue, OrderUpdatePayload } from "@/components/OrderQueue";
+import { RegistrationRequestsPanel } from "@/components/RegistrationRequestsPanel";
 import { WebhookSimulator } from "@/components/WebhookSimulator";
 import {
   NotificationToast,
@@ -34,20 +35,26 @@ import {
 } from "@/lib/client-auth";
 import { playNotificationSound } from "@/lib/notification-sound";
 import {
-  AccessKeyItem,
   AuthUser,
   CompanyItem,
   OrderItem,
   OrderStatus,
 } from "@/types";
 
-type FilterOption = "ALL" | "PENDENTE" | "EM_ROTA" | "CONCLUIDO" | "REVIEW";
+type FilterOption =
+  | "PENDENTE"
+  | "AGENDADAS"
+  | "EM_ROTA"
+  | "CONCLUIDO"
+  | "ALL"
+  | "REVIEW";
 
 const FILTER_PILLS: { id: FilterOption; label: string }[] = [
-  { id: "ALL", label: "Todos" },
   { id: "PENDENTE", label: "Pendentes" },
+  { id: "AGENDADAS", label: "Agendadas" },
   { id: "EM_ROTA", label: "Em Rota" },
-  { id: "CONCLUIDO", label: "Concluídos" },
+  { id: "CONCLUIDO", label: "Concluídas (5 dias)" },
+  { id: "ALL", label: "Todas" },
   { id: "REVIEW", label: "Revisão" },
 ];
 
@@ -58,11 +65,10 @@ export default function DashboardPage() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [companies, setCompanies] = useState<CompanyItem[]>([]);
-  const [accessKeys, setAccessKeys] = useState<AccessKeyItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<FilterOption>("ALL");
+  const [filter, setFilter] = useState<FilterOption>("PENDENTE");
   const [simulatorOpen, setSimulatorOpen] = useState(false);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
@@ -152,14 +158,10 @@ export default function DashboardPage() {
   const isAdmin = user?.role === "ADMIN_MASTER" || user?.role === "ADMIN";
 
   const fetchDashboardData = useCallback(
-    async (currentUser: AuthUser) => {
-      const admin =
-        currentUser.role === "ADMIN_MASTER" || currentUser.role === "ADMIN";
-
-      const [ordersRes, companiesRes, keysRes] = await Promise.all([
+    async () => {
+      const [ordersRes, companiesRes] = await Promise.all([
         authFetch("/api/orders"),
         authFetch("/api/companies"),
-        admin ? authFetch("/api/access-keys") : Promise.resolve(null),
       ]);
 
       if (ordersRes.status === 401 || companiesRes.status === 401) {
@@ -183,13 +185,6 @@ export default function DashboardPage() {
       knownOrderIdsRef.current = new Set(ordersData.orders.map((o) => o.id));
       setOrders(ordersData.orders);
       setCompanies(companiesData.companies);
-
-      if (keysRes && keysRes.ok) {
-        const keysData = (await keysRes.json()) as {
-          accessKeys: AccessKeyItem[];
-        };
-        setAccessKeys(keysData.accessKeys);
-      }
     },
     [router]
   );
@@ -214,7 +209,7 @@ export default function DashboardPage() {
         if (!active) return;
 
         setUser(meData.user);
-        await fetchDashboardData(meData.user);
+        await fetchDashboardData();
 
         if (
           typeof window !== "undefined" &&
@@ -297,19 +292,11 @@ export default function DashboardPage() {
     setRefreshing(true);
     setError(null);
     try {
-      await fetchDashboardData(user);
+      await fetchDashboardData();
     } catch {
       setError("Erro ao atualizar os dados da fila.");
     } finally {
       setRefreshing(false);
-    }
-  }
-
-  async function handleRefreshAccessKeys() {
-    const res = await authFetch("/api/access-keys");
-    if (res.ok) {
-      const data = (await res.json()) as { accessKeys: AccessKeyItem[] };
-      setAccessKeys(data.accessKeys);
     }
   }
 
@@ -330,6 +317,27 @@ export default function DashboardPage() {
       setOrders(previous);
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       setError(data.error || "Erro ao atualizar status do pedido.");
+      return;
+    }
+
+    const data = (await res.json()) as { order: OrderItem };
+    setOrders((prev) => prev.map((o) => (o.id === orderId ? data.order : o)));
+  }
+
+  async function handleUpdateOrder(
+    orderId: string,
+    updates: OrderUpdatePayload
+  ) {
+    setError(null);
+    const res = await authFetch(`/api/orders/${orderId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    });
+
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      setError(data.error || "Erro ao salvar dados da coleta.");
       return;
     }
 
@@ -401,6 +409,13 @@ export default function DashboardPage() {
     switch (filter) {
       case "PENDENTE":
         return orders.filter((o) => o.status === "PENDENTE");
+      case "AGENDADAS":
+        return orders.filter(
+          (o) =>
+            o.scheduledDate !== null &&
+            o.status !== "CONCLUIDO" &&
+            o.status !== "CANCELADO"
+        );
       case "EM_ROTA":
         return orders.filter((o) => o.status === "EM_ROTA");
       case "CONCLUIDO":
@@ -451,6 +466,12 @@ export default function DashboardPage() {
     return {
       total: orders.length,
       pending: orders.filter((o) => o.status === "PENDENTE").length,
+      scheduled: orders.filter(
+        (o) =>
+          o.scheduledDate !== null &&
+          o.status !== "CONCLUIDO" &&
+          o.status !== "CANCELADO"
+      ).length,
       inRoute: orders.filter((o) => o.status === "EM_ROTA").length,
       review: orders.filter((o) => o.needsReview || !o.company).length,
     };
@@ -458,12 +479,12 @@ export default function DashboardPage() {
 
   if (loading || !user) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-slate-50 dark:bg-slate-950">
+      <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-[var(--color-bg-main)]">
         <Loader2
-          className="h-8 w-8 animate-spin text-emerald-600 dark:text-emerald-400"
+          className="h-8 w-8 animate-spin text-[#B91C1C]"
           aria-hidden="true"
         />
-        <p className="text-sm font-medium text-slate-600 dark:text-slate-300">
+        <p className="text-sm font-medium text-[var(--color-text-muted)]">
           Carregando painel EcoColetas...
         </p>
       </div>
@@ -471,7 +492,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
+    <div className="min-h-screen bg-[var(--color-bg-main)]">
       <Navbar user={user} />
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
@@ -479,7 +500,7 @@ export default function DashboardPage() {
         {error && (
           <div
             role="alert"
-            className="mb-5 flex items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/50 dark:text-rose-200"
+            className="mb-5 flex items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-[#991B1B] dark:border-red-900/60 dark:bg-red-950/50 dark:text-red-200"
           >
             <span>{error}</span>
             <button
@@ -497,58 +518,64 @@ export default function DashboardPage() {
           aria-label="Resumo operacional"
           className="mb-6 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4"
         >
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900">
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                Total na Fila
-              </span>
-              <ClipboardList
-                className="h-4.5 w-4.5 text-slate-400"
-                aria-hidden="true"
-              />
-            </div>
-            <p className="mt-2 text-2xl font-bold text-slate-900 dark:text-white">
-              {stats.total}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+              <span className="text-xs font-semibold uppercase tracking-wide text-[#B91C1C] dark:text-red-400">
                 Pendentes
               </span>
-              <Clock className="h-4.5 w-4.5 text-amber-500" aria-hidden="true" />
+              <Clock className="h-4.5 w-4.5 text-[#B91C1C]" aria-hidden="true" />
             </div>
-            <p className="mt-2 text-2xl font-bold text-slate-900 dark:text-white">
+            <p className="mt-2 text-2xl font-bold text-[var(--color-text-main)]">
               {stats.pending}
             </p>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900">
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                Agendadas
+              </span>
+              <Calendar
+                className="h-4.5 w-4.5 text-[#334155] dark:text-slate-400"
+                aria-hidden="true"
+              />
+            </div>
+            <p className="mt-2 text-2xl font-bold text-[var(--color-text-main)]">
+              {stats.scheduled}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wide text-sky-600 dark:text-sky-400">
                 Em Rota
               </span>
               <Truck className="h-4.5 w-4.5 text-sky-500" aria-hidden="true" />
             </div>
-            <p className="mt-2 text-2xl font-bold text-slate-900 dark:text-white">
+            <p className="mt-2 text-2xl font-bold text-[var(--color-text-main)]">
               {stats.inRoute}
             </p>
           </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs dark:border-slate-800 dark:bg-slate-900">
+          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wide text-rose-600 dark:text-rose-400">
+              <span className="text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
                 Para Revisar
               </span>
               <AlertTriangle
-                className="h-4.5 w-4.5 text-rose-500"
+                className="h-4.5 w-4.5 text-amber-500"
                 aria-hidden="true"
               />
             </div>
-            <p className="mt-2 text-2xl font-bold text-slate-900 dark:text-white">
-              {stats.review}
-            </p>
+            <div className="mt-2 flex items-baseline justify-between">
+              <p className="text-2xl font-bold text-[var(--color-text-main)]">
+                {stats.review}
+              </p>
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-text-muted)]">
+                <ClipboardList className="h-3 w-3" aria-hidden="true" />
+                {stats.total} total
+              </span>
+            </div>
           </div>
         </section>
 
@@ -569,18 +596,30 @@ export default function DashboardPage() {
               >
                 {FILTER_PILLS.map((pill) => {
                   const active = filter === pill.id;
+                  const isPendingTab = pill.id === "PENDENTE";
                   return (
                     <button
                       key={pill.id}
                       type="button"
                       onClick={() => setFilter(pill.id)}
-                      className={`rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all ${
+                      className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all ${
                         active
-                          ? "bg-emerald-600 text-white shadow-xs dark:bg-emerald-500"
-                          : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+                          ? "bg-[#B91C1C] text-white shadow-xs"
+                          : "border border-[var(--color-border)] bg-[var(--color-surface-card)] text-[var(--color-text-muted)] hover:bg-slate-100 dark:hover:bg-slate-800"
                       }`}
                     >
-                      {pill.label}
+                      <span>{pill.label}</span>
+                      {isPendingTab && (
+                        <span
+                          className={`rounded-full px-1.5 py-0.2 text-[11px] font-bold ${
+                            active
+                              ? "bg-white text-[#B91C1C]"
+                              : "bg-[#B91C1C] text-white"
+                          }`}
+                        >
+                          {stats.pending}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
@@ -591,7 +630,7 @@ export default function DashboardPage() {
                   type="button"
                   onClick={handleRefresh}
                   disabled={refreshing}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-card)] px-3 py-2 text-xs font-semibold text-[var(--color-text-main)] shadow-2xs hover:bg-slate-50 disabled:opacity-60 dark:hover:bg-slate-800"
                 >
                   <RefreshCw
                     className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
@@ -603,7 +642,7 @@ export default function DashboardPage() {
                 <button
                   type="button"
                   onClick={() => setSimulatorOpen(true)}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#B91C1C] px-3.5 py-2 text-xs font-semibold text-white shadow-xs hover:bg-[#991B1B]"
                 >
                   <MessageCircle className="h-4 w-4" aria-hidden="true" />
                   <span>Simular WhatsApp</span>
@@ -612,17 +651,19 @@ export default function DashboardPage() {
             </div>
 
             {isAdmin && (
-              <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-                Dica: arraste os cards ou use as setas ↑ / ↓ para definir a
-                prioridade de atendimento.
+              <p className="mb-3 text-xs text-[var(--color-text-muted)]">
+                Dica: toque em um card para agendar ou registrar a coleta.
+                Arraste os cards ou use as setas ↑ / ↓ para definir a
+                prioridade.
               </p>
             )}
 
             <OrderQueue
               orders={filteredOrders}
               companies={companies}
-              userRole={user.role}
+              user={user}
               onStatusChange={handleStatusChange}
+              onUpdateOrder={handleUpdateOrder}
               onLinkCompany={handleLinkCompany}
               onDeleteOrder={handleDeleteOrder}
               onMoveOrder={handleMoveOrder}
@@ -633,10 +674,7 @@ export default function DashboardPage() {
           {/* Admin Sidebar */}
           {isAdmin && (
             <aside className="space-y-6 xl:col-span-4">
-              <AccessKeyPanel
-                accessKeys={accessKeys}
-                onKeyCreated={handleRefreshAccessKeys}
-              />
+              <RegistrationRequestsPanel />
             </aside>
           )}
         </div>
@@ -647,7 +685,7 @@ export default function DashboardPage() {
         onClose={() => setSimulatorOpen(false)}
         onOrderCreated={async () => {
           if (user) {
-            await fetchDashboardData(user);
+            await fetchDashboardData();
           }
         }}
       />

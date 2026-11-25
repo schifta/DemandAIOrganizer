@@ -48,8 +48,25 @@ export interface OrderItem {
   status: OrderStatus;
   priorityOrder: number;
   needsReview: boolean;
+  scheduledDate: string | null;
+  truckUsed: string | null;
+  collectedBy: string | null;
+  notes: string | null;
+  completedAt: string | null;
+  manuallyEdited: boolean;
+  lockedFields: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RegistrationRequestItem {
+  id: string;
+  name: string;
+  email: string;
+  requestedRole: string;
+  status: string;
+  expiresAt: string;
+  createdAt: string;
 }
 
 export interface AccessKeyItem {

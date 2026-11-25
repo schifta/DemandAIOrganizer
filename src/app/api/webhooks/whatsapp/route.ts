@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { parseWhatsAppPayload, normalizePhone } from "@/lib/whatsapp-parser";
 import { extractOrderWithNLP } from "@/lib/nlp-extractor";
 import { emitNewOrder } from "@/lib/order-events";
+import { filterAiUpdatePayload } from "@/lib/ai-guard";
 
 function normalizeForMatch(value: string): string {
   return value
@@ -166,6 +167,61 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const needsReview = companyId === null;
 
+  const orderId =
+    typeof body === "object" &&
+    body !== null &&
+    typeof (body as { orderId?: unknown }).orderId === "string"
+      ? (body as { orderId: string }).orderId.trim()
+      : "";
+
+  if (orderId) {
+    const existing = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { company: true },
+    });
+
+    if (existing) {
+      const candidatePatch = {
+        requesterName: extracted.requesterName,
+        actionType: extracted.actionType,
+        containerType: extracted.containerType,
+        quantity: extracted.quantity,
+        companyId,
+        needsReview,
+        companyFallbackNote,
+      };
+
+      const filteredPatch = filterAiUpdatePayload(existing, candidatePatch);
+
+      if (Object.keys(filteredPatch).length === 0) {
+        return NextResponse.json(
+          {
+            ok: true,
+            skippedOverwrite: true,
+            reason: "Pedido editado manualmente está protegido contra alterações da IA",
+            order: existing,
+          },
+          { status: 200 }
+        );
+      }
+
+      const updated = await prisma.order.update({
+        where: { id: existing.id },
+        data: filteredPatch,
+        include: { company: true },
+      });
+
+      return NextResponse.json(
+        {
+          ok: true,
+          updatedByAi: true,
+          order: updated,
+        },
+        { status: 200 }
+      );
+    }
+  }
+
   const agg = await prisma.order.aggregate({
     _max: { priorityOrder: true },
   });
@@ -184,6 +240,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       status: "PENDENTE",
       priorityOrder: nextPriority,
       needsReview,
+      manuallyEdited: false,
+      lockedFields: "[]",
     },
     include: {
       company: true,

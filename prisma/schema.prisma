@@ -63,7 +63,27 @@ model Order {
   rawMessage          String
   status              String   @default("PENDENTE") // "PENDENTE" | "EM_ROTA" | "CONCLUIDO" | "CANCELADO"
   priorityOrder       Int
-  needsReview         Boolean  @default(false)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  needsReview         Boolean   @default(false)
+  scheduledDate       DateTime?
+  truckUsed           String?
+  collectedBy         String?
+  notes               String?
+  completedAt         DateTime?
+  manuallyEdited      Boolean   @default(false)
+  lockedFields        String    @default("[]")
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+}
+
+model RegistrationRequest {
+  id            String    @id @default(cuid())
+  name          String
+  email         String
+  passwordHash  String
+  requestedRole String    @default("OPERATOR")
+  status        String    @default("PENDING") // "PENDING" | "APPROVED" | "REJECTED"
+  expiresAt     DateTime
+  reviewedById  String?
+  reviewedAt    DateTime?
+  createdAt     DateTime  @default(now())
 }

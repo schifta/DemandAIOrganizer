@@ -45,12 +45,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const savedTheme = localStorage.getItem(THEME_STORAGE_KEY);
-    const initialTheme: ThemeMode =
-      savedTheme === "dark" || savedTheme === "light"
-        ? savedTheme
-        : window.matchMedia("(prefers-color-scheme: dark)").matches
-          ? "dark"
-          : "light";
+    const initialTheme: ThemeMode = savedTheme === "dark" ? "dark" : "light";
 
     const savedScale = localStorage.getItem(FONT_STORAGE_KEY);
     const initialScale: FontScale = isValidFontScale(savedScale)

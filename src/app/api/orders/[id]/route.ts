@@ -11,6 +11,38 @@ type RouteContext = {
   params: Promise<{ id: string }>;
 };
 
+function parseLockedFields(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((item): item is string => typeof item === "string");
+    }
+  } catch {
+    // Ignore malformed JSON and reset to empty list
+  }
+  return [];
+}
+
+function parseScheduledDate(value: unknown): { ok: true; date: Date | null } | { ok: false } {
+  if (value === null) {
+    return { ok: true, date: null };
+  }
+  if (typeof value !== "string") {
+    return { ok: false };
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return { ok: true, date: null };
+  }
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
+    ? new Date(`${trimmed}T12:00:00.000Z`)
+    : new Date(trimmed);
+  if (Number.isNaN(date.getTime())) {
+    return { ok: false };
+  }
+  return { ok: true, date };
+}
+
 export async function PATCH(request: Request, context: RouteContext) {
   try {
     const auth = await requireAuth();
@@ -29,6 +61,10 @@ export async function PATCH(request: Request, context: RouteContext) {
 
     const {
       status,
+      scheduledDate,
+      truckUsed,
+      collectedBy,
+      notes,
       companyId,
       needsReview,
       requesterName,
@@ -37,6 +73,10 @@ export async function PATCH(request: Request, context: RouteContext) {
       quantity,
     } = body as {
       status?: unknown;
+      scheduledDate?: unknown;
+      truckUsed?: unknown;
+      collectedBy?: unknown;
+      notes?: unknown;
       companyId?: unknown;
       needsReview?: unknown;
       requesterName?: unknown;
@@ -67,7 +107,24 @@ export async function PATCH(request: Request, context: RouteContext) {
       );
     }
 
+    const existingOrder = await prisma.order.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        lockedFields: true,
+        collectedBy: true,
+      },
+    });
+
+    if (!existingOrder) {
+      return NextResponse.json(
+        { error: "Pedido não encontrado" },
+        { status: 404 }
+      );
+    }
+
     const data: Prisma.OrderUpdateInput = {};
+    const modifiedFields: string[] = [];
 
     if (status !== undefined) {
       if (
@@ -77,6 +134,83 @@ export async function PATCH(request: Request, context: RouteContext) {
         return NextResponse.json({ error: "Status inválido" }, { status: 400 });
       }
       data.status = status;
+      modifiedFields.push("status");
+
+      if (status === "CONCLUIDO") {
+        data.completedAt = new Date();
+      } else {
+        data.completedAt = null;
+      }
+    }
+
+    if (scheduledDate !== undefined) {
+      const parsedDate = parseScheduledDate(scheduledDate);
+      if (!parsedDate.ok) {
+        return NextResponse.json(
+          { error: "Data de agendamento inválida" },
+          { status: 400 }
+        );
+      }
+      data.scheduledDate = parsedDate.date;
+      modifiedFields.push("scheduledDate");
+    }
+
+    if (truckUsed !== undefined) {
+      if (truckUsed === null) {
+        data.truckUsed = null;
+      } else if (typeof truckUsed === "string") {
+        data.truckUsed = truckUsed.trim() || null;
+      } else {
+        return NextResponse.json(
+          { error: "Caminhão utilizado inválido" },
+          { status: 400 }
+        );
+      }
+      modifiedFields.push("truckUsed");
+    }
+
+    if (collectedBy !== undefined) {
+      if (collectedBy === null) {
+        data.collectedBy = null;
+      } else if (typeof collectedBy === "string") {
+        data.collectedBy = collectedBy.trim() || null;
+      } else {
+        return NextResponse.json(
+          { error: "Campo coletado por inválido" },
+          { status: 400 }
+        );
+      }
+      modifiedFields.push("collectedBy");
+    }
+
+    const isCollectedByEmptyInput =
+      collectedBy === undefined ||
+      collectedBy === null ||
+      (typeof collectedBy === "string" && !collectedBy.trim());
+
+    if (
+      status === "CONCLUIDO" &&
+      isCollectedByEmptyInput &&
+      !existingOrder.collectedBy?.trim()
+    ) {
+      data.collectedBy = auth.user.name;
+      if (!modifiedFields.includes("collectedBy")) {
+        modifiedFields.push("collectedBy");
+      }
+    }
+
+    if (notes !== undefined) {
+      if (notes === null) {
+        data.notes = null;
+      } else if (typeof notes === "string") {
+        data.notes = notes.trim() || null;
+      } else {
+        return NextResponse.json(
+          { error: "Observações inválidas" },
+          { status: 400 }
+        );
+      }
+      modifiedFields.push("notes");
     }
 
     if (companyId !== undefined) {
@@ -90,6 +224,7 @@ export async function PATCH(request: Request, context: RouteContext) {
           { status: 400 }
         );
       }
+      modifiedFields.push("companyId");
     }
 
     if (needsReview !== undefined) {
@@ -100,6 +235,7 @@ export async function PATCH(request: Request, context: RouteContext) {
         );
       }
       data.needsReview = needsReview;
+      modifiedFields.push("needsReview");
     }
 
     if (requesterName !== undefined) {
@@ -110,6 +246,7 @@ export async function PATCH(request: Request, context: RouteContext) {
         );
       }
       data.requesterName = requesterName.trim();
+      modifiedFields.push("requesterName");
     }
 
     if (actionType !== undefined) {
@@ -125,6 +262,7 @@ export async function PATCH(request: Request, context: RouteContext) {
         );
       }
       data.actionType = actionType;
+      modifiedFields.push("actionType");
     }
 
     if (containerType !== undefined) {
@@ -140,6 +278,7 @@ export async function PATCH(request: Request, context: RouteContext) {
         );
       }
       data.containerType = containerType;
+      modifiedFields.push("containerType");
     }
 
     if (quantity !== undefined) {
@@ -154,14 +293,23 @@ export async function PATCH(request: Request, context: RouteContext) {
         );
       }
       data.quantity = quantity;
+      modifiedFields.push("quantity");
     }
 
-    if (Object.keys(data).length === 0) {
+    if (modifiedFields.length === 0) {
       return NextResponse.json(
         { error: "Nenhum campo válido para atualização" },
         { status: 400 }
       );
     }
+
+    const existingLocked = parseLockedFields(existingOrder.lockedFields);
+    const mergedLocked = Array.from(
+      new Set([...existingLocked, ...modifiedFields])
+    );
+
+    data.manuallyEdited = true;
+    data.lockedFields = JSON.stringify(mergedLocked);
 
     const order = await prisma.order.update({
       where: { id },

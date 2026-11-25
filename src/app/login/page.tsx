@@ -4,7 +4,7 @@ import React, { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertCircle,
-  KeyRound,
+  CheckCircle2,
   Loader2,
   LogIn,
   Moon,
@@ -33,6 +33,7 @@ export default function LoginPage() {
   const [tab, setTab] = useState<AuthTab>("login");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [regSuccess, setRegSuccess] = useState<string | null>(null);
 
   // Login state
   const [loginEmail, setLoginEmail] = useState("");
@@ -42,7 +43,6 @@ export default function LoginPage() {
   const [regName, setRegName] = useState("");
   const [regEmail, setRegEmail] = useState("");
   const [regPassword, setRegPassword] = useState("");
-  const [regAccessKey, setRegAccessKey] = useState("");
 
   const isMinFont = fontScale === FONT_SCALES[0];
   const isMaxFont = fontScale === FONT_SCALES[FONT_SCALES.length - 1];
@@ -74,6 +74,7 @@ export default function LoginPage() {
   function switchTab(nextTab: AuthTab) {
     setTab(nextTab);
     setError(null);
+    setRegSuccess(null);
   }
 
   async function handleLogin(e: FormEvent<HTMLFormElement>) {
@@ -118,6 +119,7 @@ export default function LoginPage() {
   async function handleRegister(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(null);
+    setRegSuccess(null);
 
     if (regPassword.length < 6) {
       setError("A senha deve ter pelo menos 6 caracteres.");
@@ -133,43 +135,41 @@ export default function LoginPage() {
           name: regName.trim(),
           email: regEmail.trim(),
           password: regPassword,
-          accessKey: regAccessKey.trim().toUpperCase(),
         }),
       });
 
       const data = (await res.json().catch(() => ({}))) as {
         error?: string;
-        token?: string;
-        user?: AuthUser;
+        pendingApproval?: boolean;
+        message?: string;
       };
 
       if (!res.ok) {
         setError(
-          data.error ||
-            "Não foi possível concluir o cadastro. Verifique a Key de acesso."
+          data.error || "Não foi possível enviar a solicitação de cadastro."
         );
         return;
       }
 
-      if (data.token && data.user) {
-        saveSession(data.token, data.user);
-      }
-
-      router.push("/");
-      router.refresh();
+      setRegName("");
+      setRegEmail("");
+      setRegPassword("");
+      setRegSuccess(
+        "Solicitação enviada! Aguarde a aprovação de qualquer administrador (válida por 24h; limite de 3 por dia)."
+      );
     } catch {
-      setError("Erro de conexão ao cadastrar. Tente novamente.");
+      setError("Erro de conexão ao solicitar cadastro. Tente novamente.");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="relative flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-emerald-50 via-slate-50 to-sky-50 px-4 py-10 dark:from-slate-950 dark:via-slate-900 dark:to-emerald-950/30">
+    <div className="relative flex min-h-screen flex-col items-center justify-center bg-[var(--color-bg-main)] px-4 py-10">
       {/* Top-right Accessibility & Theme Controls */}
       <div className="fixed top-4 right-4 z-20 flex items-center gap-2">
         <div
-          className="flex items-center rounded-lg border border-slate-200 bg-white/90 p-0.5 shadow-xs backdrop-blur-sm dark:border-slate-700 dark:bg-slate-800/90"
+          className="flex items-center gap-1.5"
           role="group"
           aria-label="Controle de tamanho de fonte"
         >
@@ -177,9 +177,9 @@ export default function LoginPage() {
             type="button"
             onClick={decreaseFont}
             disabled={isMinFont}
-            title="Diminuir fonte"
-            aria-label="Diminuir tamanho da fonte"
-            className="rounded-md px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-slate-700"
+            title="Diminuir tamanho da fonte"
+            aria-label="Diminuir tamanho da fonte (A-)"
+            className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-card)] px-2.5 py-1.5 text-xs font-bold text-[var(--color-text-main)] shadow-2xs hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-slate-800"
           >
             A-
           </button>
@@ -187,9 +187,9 @@ export default function LoginPage() {
             type="button"
             onClick={increaseFont}
             disabled={isMaxFont}
-            title="Aumentar fonte"
-            aria-label="Aumentar tamanho da fonte"
-            className="rounded-md px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-200 dark:hover:bg-slate-700"
+            title="Aumentar tamanho da fonte"
+            aria-label="Aumentar tamanho da fonte (A+)"
+            className="rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-card)] px-2.5 py-1.5 text-xs font-bold text-[var(--color-text-main)] shadow-2xs hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-slate-800"
           >
             A+
           </button>
@@ -199,7 +199,7 @@ export default function LoginPage() {
               onClick={resetFont}
               title="Restaurar fonte padrão (100%)"
               aria-label="Restaurar tamanho padrão da fonte"
-              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-slate-100 dark:text-emerald-400 dark:hover:bg-slate-700"
+              className="inline-flex items-center gap-1 rounded-lg border border-[#B91C1C]/30 bg-[#B91C1C]/10 px-2 py-1.5 text-xs font-semibold text-[#B91C1C] hover:bg-[#B91C1C]/20 dark:border-red-800 dark:bg-red-950/40 dark:text-red-300"
             >
               <RotateCcw className="h-3 w-3" aria-hidden="true" />
               <span>{fontScale}</span>
@@ -213,7 +213,7 @@ export default function LoginPage() {
           aria-label={
             theme === "dark" ? "Mudar para tema claro" : "Mudar para tema escuro"
           }
-          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white/90 px-3 py-1.5 text-xs font-medium text-slate-700 shadow-xs backdrop-blur-sm hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800/90 dark:text-slate-200 dark:hover:bg-slate-700"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-card)] px-3 py-1.5 text-xs font-medium text-[var(--color-text-main)] shadow-2xs hover:bg-slate-100 dark:hover:bg-slate-800"
         >
           {theme === "dark" ? (
             <>
@@ -222,7 +222,7 @@ export default function LoginPage() {
             </>
           ) : (
             <>
-              <Moon className="h-3.5 w-3.5 text-slate-600" aria-hidden="true" />
+              <Moon className="h-3.5 w-3.5 text-[#334155]" aria-hidden="true" />
               <span>Escuro</span>
             </>
           )}
@@ -230,20 +230,20 @@ export default function LoginPage() {
       </div>
 
       {/* Auth Card */}
-      <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-200/60 sm:p-8 dark:border-slate-800 dark:bg-slate-900 dark:shadow-none">
+      <div className="w-full max-w-md rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-6 shadow-xl shadow-slate-200/60 sm:p-8 dark:shadow-none">
         {/* Branding */}
         <div className="mb-6 flex flex-col items-center text-center">
-          <div className="relative mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-600 text-white shadow-md dark:bg-emerald-500">
+          <div className="relative mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#B91C1C] text-white shadow-md">
             <Recycle className="h-7 w-7" aria-hidden="true" />
             <Truck
-              className="absolute -right-1.5 -bottom-1.5 h-5 w-5 rounded-full bg-white p-0.5 text-emerald-700 shadow dark:bg-slate-900 dark:text-emerald-400"
+              className="absolute -right-1.5 -bottom-1.5 h-5 w-5 rounded-full bg-white p-0.5 text-[#1E293B] shadow dark:bg-[#0F172A] dark:text-[#F8FAFC]"
               aria-hidden="true"
             />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="text-2xl font-bold tracking-tight text-[var(--color-text-main)]">
             EcoColetas
           </h1>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+          <p className="mt-1 text-sm text-[var(--color-text-muted)]">
             Controle de fila de coletas e trocas via WhatsApp
           </p>
         </div>
@@ -261,8 +261,8 @@ export default function LoginPage() {
             onClick={() => switchTab("login")}
             className={`flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold transition-all sm:text-sm ${
               tab === "login"
-                ? "bg-white text-emerald-700 shadow-xs dark:bg-slate-900 dark:text-emerald-400"
-                : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+                ? "bg-[var(--color-surface-card)] text-[#B91C1C] shadow-xs dark:text-red-400"
+                : "text-[var(--color-text-muted)] hover:text-[var(--color-text-main)]"
             }`}
           >
             <LogIn className="h-4 w-4" aria-hidden="true" />
@@ -275,12 +275,12 @@ export default function LoginPage() {
             onClick={() => switchTab("register")}
             className={`flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold transition-all sm:text-sm ${
               tab === "register"
-                ? "bg-white text-emerald-700 shadow-xs dark:bg-slate-900 dark:text-emerald-400"
-                : "text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-200"
+                ? "bg-[var(--color-surface-card)] text-[#B91C1C] shadow-xs dark:text-red-400"
+                : "text-[var(--color-text-muted)] hover:text-[var(--color-text-main)]"
             }`}
           >
-            <KeyRound className="h-4 w-4" aria-hidden="true" />
-            <span>Cadastrar com Key (5 min)</span>
+            <UserPlus className="h-4 w-4" aria-hidden="true" />
+            <span>Solicitar Cadastro</span>
           </button>
         </div>
 
@@ -288,13 +288,27 @@ export default function LoginPage() {
         {error && (
           <div
             role="alert"
-            className="mb-5 flex items-start gap-2.5 rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-sm text-rose-800 dark:border-rose-900/60 dark:bg-rose-950/50 dark:text-rose-200"
+            className="mb-5 flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 px-3.5 py-3 text-sm text-[#991B1B] dark:border-red-900/60 dark:bg-red-950/50 dark:text-red-200"
           >
             <AlertCircle
-              className="mt-0.5 h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400"
+              className="mt-0.5 h-4 w-4 shrink-0 text-[#B91C1C] dark:text-red-400"
               aria-hidden="true"
             />
             <span>{error}</span>
+          </div>
+        )}
+
+        {/* Success Alert */}
+        {regSuccess && (
+          <div
+            role="status"
+            className="mb-5 flex items-start gap-2.5 rounded-xl border border-[#15803D]/30 bg-green-50 px-3.5 py-3 text-sm text-[#15803D] dark:border-green-800 dark:bg-green-950/50 dark:text-green-200"
+          >
+            <CheckCircle2
+              className="mt-0.5 h-4 w-4 shrink-0 text-[#15803D] dark:text-green-400"
+              aria-hidden="true"
+            />
+            <span>{regSuccess}</span>
           </div>
         )}
 
@@ -304,7 +318,7 @@ export default function LoginPage() {
             <div>
               <label
                 htmlFor="login-email"
-                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300"
+                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]"
               >
                 E-mail
               </label>
@@ -316,14 +330,14 @@ export default function LoginPage() {
                 placeholder="nome@ecocoletas.com.br"
                 value={loginEmail}
                 onChange={(e) => setLoginEmail(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
               />
             </div>
 
             <div>
               <label
                 htmlFor="login-password"
-                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300"
+                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]"
               >
                 Senha
               </label>
@@ -335,14 +349,14 @@ export default function LoginPage() {
                 placeholder="••••••••"
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
               />
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#B91C1C] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[#991B1B] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? (
                 <>
@@ -358,12 +372,12 @@ export default function LoginPage() {
             </button>
           </form>
         ) : (
-          /* Register Form */
+          /* Registration Request Form */
           <form onSubmit={handleRegister} className="space-y-4">
             <div>
               <label
                 htmlFor="reg-name"
-                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300"
+                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]"
               >
                 Nome completo
               </label>
@@ -375,14 +389,14 @@ export default function LoginPage() {
                 placeholder="Ex.: Ana Paula"
                 value={regName}
                 onChange={(e) => setRegName(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
               />
             </div>
 
             <div>
               <label
                 htmlFor="reg-email"
-                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300"
+                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]"
               >
                 E-mail
               </label>
@@ -394,14 +408,14 @@ export default function LoginPage() {
                 placeholder="operador@ecocoletas.com.br"
                 value={regEmail}
                 onChange={(e) => setRegEmail(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
               />
             </div>
 
             <div>
               <label
                 htmlFor="reg-password"
-                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300"
+                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]"
               >
                 Senha (mín. 6 caracteres)
               </label>
@@ -414,42 +428,24 @@ export default function LoginPage() {
                 placeholder="Crie uma senha"
                 value={regPassword}
                 onChange={(e) => setRegPassword(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
-              />
-            </div>
-
-            <div>
-              <label
-                htmlFor="reg-key"
-                className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300"
-              >
-                Key de Acesso (validade 5 min)
-              </label>
-              <input
-                id="reg-key"
-                type="text"
-                required
-                placeholder="ECO-XXXX-XXXX"
-                value={regAccessKey}
-                onChange={(e) => setRegAccessKey(e.target.value.toUpperCase())}
-                className="w-full rounded-xl border border-slate-300 bg-white px-3.5 py-2.5 font-mono text-sm uppercase tracking-wider text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-white dark:placeholder:text-slate-500"
+                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
               />
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-500 dark:hover:bg-emerald-600"
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#B91C1C] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[#991B1B] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  <span>Cadastrando...</span>
+                  <span>Enviando solicitação...</span>
                 </>
               ) : (
                 <>
                   <UserPlus className="h-4 w-4" aria-hidden="true" />
-                  <span>Cadastrar e entrar</span>
+                  <span>Solicitar Cadastro</span>
                 </>
               )}
             </button>
