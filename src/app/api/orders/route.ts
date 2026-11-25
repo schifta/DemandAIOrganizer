@@ -13,6 +13,7 @@ export async function GET() {
     await cleanupExpiredRecords();
 
     const orders = await prisma.order.findMany({
+      where: { deletedAt: null },
       orderBy: [{ priorityOrder: "asc" }, { createdAt: "asc" }],
       include: {
         company: {

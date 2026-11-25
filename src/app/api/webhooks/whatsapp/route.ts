@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { parseWhatsAppPayload, normalizePhone } from "@/lib/whatsapp-parser";
-import { extractOrderWithNLP } from "@/lib/nlp-extractor";
+import {
+  extractOrderWithNLP,
+  matchCompanyWithGemini,
+} from "@/lib/nlp-extractor";
 import { emitNewOrder } from "@/lib/order-events";
 import { filterAiUpdatePayload } from "@/lib/ai-guard";
 
@@ -56,12 +59,20 @@ async function sendEvolutionAutoReply(
   }
 }
 
+function tokenizeForScore(value: string): Set<string> {
+  const tokens = normalizeForMatch(value)
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 2);
+  return new Set(tokens);
+}
+
 async function resolveCompanyFromMessage(params: {
   phone: string;
   requesterName: string;
   companyHint: string | null;
+  rawText: string;
 }): Promise<{ companyId: string | null; companyFallbackNote: string | null }> {
-  const { phone, requesterName, companyHint } = params;
+  const { phone, requesterName, companyHint, rawText } = params;
 
   // 1. Primary lookup: exact or trailing 8-9 digits phone match
   if (phone.length > 0) {
@@ -146,11 +157,18 @@ async function resolveCompanyFromMessage(params: {
       const companies = await prisma.company.findMany();
       const matchedCompany = companies.find((co) => {
         const companyName = normalizeForMatch(co.name);
-        return (
+        const companyNickname = co.nickname
+          ? normalizeForMatch(co.nickname)
+          : "";
+        const nameMatches =
           companyName.length >= 2 &&
           (companyName.includes(normalizedHint) ||
-            normalizedHint.includes(companyName))
-        );
+            normalizedHint.includes(companyName));
+        const nicknameMatches =
+          companyNickname.length >= 2 &&
+          (companyNickname.includes(normalizedHint) ||
+            normalizedHint.includes(companyNickname));
+        return nameMatches || nicknameMatches;
       });
       if (matchedCompany) {
         return { companyId: matchedCompany.id, companyFallbackNote: null };
@@ -158,7 +176,74 @@ async function resolveCompanyFromMessage(params: {
     }
   }
 
-  // 3. Fallback when no matching company/contact is found
+  // 3. Gemini semantic fallback matching (company name, nickname, or contact name)
+  if (process.env.GEMINI_API_KEY?.trim()) {
+    const companiesWithContacts = await prisma.company.findMany({
+      include: {
+        contacts: {
+          select: { name: true },
+        },
+      },
+    });
+
+    if (companiesWithContacts.length > 0) {
+      const queryTokens = tokenizeForScore(
+        [
+          requesterName !== "Solicitante WhatsApp" ? requesterName : "",
+          companyHint ?? "",
+          rawText,
+        ].join(" ")
+      );
+
+      const scoredCandidates = companiesWithContacts
+        .map((co) => {
+          const candidateTokens = tokenizeForScore(
+            [
+              co.name,
+              co.nickname ?? "",
+              ...co.contacts.map((c) => c.name),
+            ].join(" ")
+          );
+          let sharedScore = 0;
+          for (const token of queryTokens) {
+            if (candidateTokens.has(token)) {
+              sharedScore += 2;
+            }
+          }
+          return {
+            company: co,
+            sharedScore,
+            contactCount: co.contacts.length,
+          };
+        })
+        .sort((a, b) => {
+          if (b.sharedScore !== a.sharedScore) {
+            return b.sharedScore - a.sharedScore;
+          }
+          return b.contactCount - a.contactCount;
+        })
+        .slice(0, 40)
+        .map(({ company }) => ({
+          id: company.id,
+          name: company.name,
+          nickname: company.nickname ?? null,
+          contactNames: company.contacts.map((c) => c.name),
+        }));
+
+      const geminiMatchedId = await matchCompanyWithGemini({
+        text: rawText,
+        requesterName,
+        companyHint,
+        candidates: scoredCandidates,
+      });
+
+      if (geminiMatchedId) {
+        return { companyId: geminiMatchedId, companyFallbackNote: null };
+      }
+    }
+  }
+
+  // 4. Fallback when no matching company/contact is found
   const companyFallbackNote = companyHint
     ? `Empresa citada: ${companyHint} (não encontrada no cadastro)`
     : "Contato/empresa não identificado automaticamente";
@@ -217,6 +302,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     phone: parsed.phone,
     requesterName: extracted.requesterName,
     companyHint: extracted.companyHint,
+    rawText: parsed.text,
   });
 
   const needsReview = companyId === null;

@@ -3,14 +3,14 @@ import "./globals.css";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
 export const metadata: Metadata = {
-  title: "EcoColetas — Gestão de Coletas e Trocas",
+  title: "Schifter Coletas — Gestão de Coletas e Trocas",
   description:
     "Painel operacional de fila de coletas e trocas via WhatsApp para gestão logística sustentável.",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
-    title: "EcoColetas",
+    title: "Schifter Coletas",
   },
 };
 

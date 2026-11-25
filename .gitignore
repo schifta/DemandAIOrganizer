@@ -21,3 +21,5 @@ prisma/dev.db-journal
 # OS / Misc
 .DS_Store
 *.tsbuildinfo
+
+.vercel

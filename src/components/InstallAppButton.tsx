@@ -128,7 +128,7 @@ export function InstallAppButton() {
         >
           <div className="mb-1.5 flex items-center justify-between gap-2">
             <span className="font-bold text-[#B91C1C] dark:text-red-400">
-              Como instalar o EcoColetas
+              Como instalar o Schifter Coletas
             </span>
             <button
               type="button"

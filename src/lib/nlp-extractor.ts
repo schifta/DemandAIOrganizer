@@ -569,3 +569,96 @@ export async function extractOrderWithNLP(
 
   return fallbackExtractOrder(text, fallbackSenderName);
 }
+
+export type CompanyMatchCandidate = {
+  id: string;
+  name: string;
+  nickname: string | null;
+  contactNames: string[];
+};
+
+/**
+ * Uses Gemini to match a WhatsApp order message against candidate companies
+ * (including nicknames, abbreviations, and contact names).
+ */
+export async function matchCompanyWithGemini(params: {
+  text: string;
+  requesterName: string;
+  companyHint: string | null;
+  candidates: CompanyMatchCandidate[];
+}): Promise<string | null> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  const topCandidates = params.candidates.slice(0, 40);
+  if (!apiKey || topCandidates.length === 0) {
+    return null;
+  }
+
+  const validIds = new Set(topCandidates.map((c) => c.id));
+  const prompt = [
+    "Associe a mensagem de WhatsApp a uma das empresas candidatas abaixo, se houver correspondência clara pelo nome da empresa, apelido/sigla ou nome do contato.",
+    "Se não houver correspondência clara, retorne null em matchedCompanyId.",
+    'Responda EXCLUSIVAMENTE com JSON válido: { "matchedCompanyId": string | null }',
+    "",
+    `Solicitante: ${JSON.stringify(params.requesterName)}`,
+    `Dica de empresa: ${JSON.stringify(params.companyHint)}`,
+    `Mensagem: ${JSON.stringify(params.text)}`,
+    `Candidatas: ${JSON.stringify(topCandidates)}`,
+  ].join("\n");
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+      apiKey
+    )}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(10000),
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: prompt }],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              matchedCompanyId: { type: "STRING", nullable: true },
+            },
+            required: ["matchedCompanyId"],
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) return null;
+
+    const json: unknown = await response.json();
+    if (!isRecord(json) || !Array.isArray(json.candidates)) return null;
+
+    const firstCandidate = json.candidates[0];
+    if (!isRecord(firstCandidate) || !isRecord(firstCandidate.content)) {
+      return null;
+    }
+
+    const parts = firstCandidate.content.parts;
+    if (!Array.isArray(parts) || !isRecord(parts[0])) return null;
+
+    const rawText = parts[0].text;
+    if (typeof rawText !== "string") return null;
+
+    const parsed: unknown = JSON.parse(rawText);
+    if (!isRecord(parsed) || typeof parsed.matchedCompanyId !== "string") {
+      return null;
+    }
+
+    const matchedId = parsed.matchedCompanyId.trim();
+    return validIds.has(matchedId) ? matchedId : null;
+  } catch {
+    return null;
+  }
+}

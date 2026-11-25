@@ -11,17 +11,21 @@ import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   Calendar,
+  CheckCircle2,
+  ClipboardCopy,
   ClipboardList,
   Clock,
+  Download,
   Loader2,
-  MessageCircle,
   RefreshCw,
+  Search,
   Truck,
+  X,
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { OrderQueue, OrderUpdatePayload } from "@/components/OrderQueue";
 import { RegistrationRequestsPanel } from "@/components/RegistrationRequestsPanel";
-import { WebhookSimulator } from "@/components/WebhookSimulator";
+import { UserManagementPanel } from "@/components/UserManagementPanel";
 import {
   NotificationToast,
   ToastItem,
@@ -43,20 +47,43 @@ import {
 
 type FilterOption =
   | "PENDENTE"
+  | "HOJE"
+  | "ATRASADOS"
   | "AGENDADAS"
-  | "EM_ROTA"
   | "CONCLUIDO"
-  | "ALL"
-  | "REVIEW";
+  | "TODOS"
+  | "REVISAO";
 
-const FILTER_PILLS: { id: FilterOption; label: string }[] = [
-  { id: "PENDENTE", label: "Pendentes" },
-  { id: "AGENDADAS", label: "Agendadas" },
-  { id: "EM_ROTA", label: "Em Rota" },
-  { id: "CONCLUIDO", label: "Concluídas (5 dias)" },
-  { id: "ALL", label: "Todas" },
-  { id: "REVIEW", label: "Revisão" },
+const FILTER_STORAGE_KEY = "eco_active_filter";
+
+const VALID_FILTERS: FilterOption[] = [
+  "PENDENTE",
+  "HOJE",
+  "ATRASADOS",
+  "AGENDADAS",
+  "CONCLUIDO",
+  "TODOS",
+  "REVISAO",
 ];
+
+function getLocalTodayYmd(): string {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getOrderScheduledYmd(iso: string | null): string {
+  if (!iso) return "";
+  try {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toISOString().slice(0, 10);
+  } catch {
+    return "";
+  }
+}
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -69,14 +96,26 @@ export default function DashboardPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterOption>("PENDENTE");
-  const [simulatorOpen, setSimulatorOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const [toasts, setToasts] = useState<ToastItem[]>([]);
 
+  // Productivity & selection state
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [batchTruck, setBatchTruck] = useState("");
+  const [batchBusy, setBatchBusy] = useState(false);
+  const [exportingCsv, setExportingCsv] = useState(false);
+  const [focusedOrderId, setFocusedOrderId] = useState<string | null>(null);
+  const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
+
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const knownOrderIdsRef = useRef<Set<string>>(new Set());
   const soundEnabledRef = useRef<boolean>(soundEnabled);
   const toastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
     new Map()
   );
+
+  const isAdmin = user?.role === "ADMIN_MASTER" || user?.role === "ADMIN";
+  const todayStr = getLocalTodayYmd();
 
   useEffect(() => {
     soundEnabledRef.current = soundEnabled;
@@ -90,6 +129,34 @@ export default function DashboardPage() {
     };
   }, []);
 
+  // Restore saved filter from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(FILTER_STORAGE_KEY) as FilterOption | null;
+      if (saved && VALID_FILTERS.includes(saved)) {
+        setFilter(saved);
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+  }, []);
+
+  // Guard REVISAO filter for non-admins
+  useEffect(() => {
+    if (user && !isAdmin && filter === "REVISAO") {
+      setFilter("PENDENTE");
+    }
+  }, [user, isAdmin, filter]);
+
+  function handleSelectFilter(nextFilter: FilterOption) {
+    setFilter(nextFilter);
+    try {
+      localStorage.setItem(FILTER_STORAGE_KEY, nextFilter);
+    } catch {
+      // Ignore storage access errors
+    }
+  }
+
   const dismissToast = useCallback((id: string) => {
     const existingTimer = toastTimersRef.current.get(id);
     if (existingTimer) {
@@ -98,6 +165,35 @@ export default function DashboardPage() {
     }
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
+
+  const showToast = useCallback(
+    (
+      toast: Omit<ToastItem, "createdAt">,
+      durationMs = 5000
+    ) => {
+      const existingTimer = toastTimersRef.current.get(toast.id);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+
+      const fullToast: ToastItem = {
+        ...toast,
+        createdAt: Date.now(),
+      };
+
+      setToasts((prev) => [
+        ...prev.filter((t) => t.id !== toast.id),
+        fullToast,
+      ]);
+
+      const timer = setTimeout(() => {
+        toastTimersRef.current.delete(toast.id);
+        setToasts((prev) => prev.filter((t) => t.id !== toast.id));
+      }, durationMs);
+      toastTimersRef.current.set(toast.id, timer);
+    },
+    []
+  );
 
   const handleIncomingOrder = useCallback(
     (newOrder: OrderItem) => {
@@ -121,20 +217,14 @@ export default function DashboardPage() {
         newOrder.containerType === "TAMBOR" ? "Tambor(es)" : "Caixa(s)"
       }`;
 
-      const toast: ToastItem = {
-        id: newOrder.id,
-        title: "Novo pedido recebido",
-        message: summary,
-        createdAt: Date.now(),
-      };
-
-      setToasts((prev) => [...prev, toast]);
-
-      const timer = setTimeout(() => {
-        toastTimersRef.current.delete(newOrder.id);
-        setToasts((prev) => prev.filter((t) => t.id !== newOrder.id));
-      }, 7000);
-      toastTimersRef.current.set(newOrder.id, timer);
+      showToast(
+        {
+          id: newOrder.id,
+          title: "Novo pedido recebido",
+          message: summary,
+        },
+        7000
+      );
 
       if (soundEnabledRef.current) {
         playNotificationSound();
@@ -146,48 +236,43 @@ export default function DashboardPage() {
         Notification.permission === "granted"
       ) {
         try {
-          new Notification("Novo pedido — EcoColetas", { body: summary });
+          new Notification("Novo pedido — Schifter Coletas", { body: summary });
         } catch {
           // Ignore browser notification errors
         }
       }
     },
-    []
+    [showToast]
   );
 
-  const isAdmin = user?.role === "ADMIN_MASTER" || user?.role === "ADMIN";
+  const fetchDashboardData = useCallback(async () => {
+    const [ordersRes, companiesRes] = await Promise.all([
+      authFetch("/api/orders"),
+      authFetch("/api/companies"),
+    ]);
 
-  const fetchDashboardData = useCallback(
-    async () => {
-      const [ordersRes, companiesRes] = await Promise.all([
-        authFetch("/api/orders"),
-        authFetch("/api/companies"),
-      ]);
+    if (ordersRes.status === 401 || companiesRes.status === 401) {
+      clearSession();
+      router.push("/login");
+      return;
+    }
 
-      if (ordersRes.status === 401 || companiesRes.status === 401) {
-        clearSession();
-        router.push("/login");
-        return;
-      }
+    if (!ordersRes.ok) {
+      throw new Error("Falha ao carregar pedidos");
+    }
+    if (!companiesRes.ok) {
+      throw new Error("Falha ao carregar empresas");
+    }
 
-      if (!ordersRes.ok) {
-        throw new Error("Falha ao carregar pedidos");
-      }
-      if (!companiesRes.ok) {
-        throw new Error("Falha ao carregar empresas");
-      }
+    const ordersData = (await ordersRes.json()) as { orders: OrderItem[] };
+    const companiesData = (await companiesRes.json()) as {
+      companies: CompanyItem[];
+    };
 
-      const ordersData = (await ordersRes.json()) as { orders: OrderItem[] };
-      const companiesData = (await companiesRes.json()) as {
-        companies: CompanyItem[];
-      };
-
-      knownOrderIdsRef.current = new Set(ordersData.orders.map((o) => o.id));
-      setOrders(ordersData.orders);
-      setCompanies(companiesData.companies);
-    },
-    [router]
-  );
+    knownOrderIdsRef.current = new Set(ordersData.orders.map((o) => o.id));
+    setOrders(ordersData.orders);
+    setCompanies(companiesData.companies);
+  }, [router]);
 
   useEffect(() => {
     let active = true;
@@ -363,21 +448,114 @@ export default function DashboardPage() {
     setOrders((prev) => prev.map((o) => (o.id === orderId ? data.order : o)));
   }
 
-  async function handleDeleteOrder(orderId: string) {
-    setError(null);
-    const previous = orders;
-    setOrders((prev) => prev.filter((o) => o.id !== orderId));
+  const handleCompleteWithUndo = useCallback(
+    async (order: OrderItem) => {
+      if (order.status === "CONCLUIDO") return;
+      setError(null);
+      const previousStatus = order.status;
 
-    const res = await authFetch(`/api/orders/${orderId}`, {
-      method: "DELETE",
-    });
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.id === order.id ? { ...o, status: "CONCLUIDO" } : o
+        )
+      );
 
-    if (!res.ok) {
-      setOrders(previous);
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
-      setError(data.error || "Erro ao excluir pedido.");
-    }
-  }
+      const res = await authFetch(`/api/orders/${order.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "CONCLUIDO" }),
+      });
+
+      if (!res.ok) {
+        setOrders((prev) =>
+          prev.map((o) =>
+            o.id === order.id ? { ...o, status: previousStatus } : o
+          )
+        );
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setError(data.error || "Erro ao concluir pedido.");
+        return;
+      }
+
+      const data = (await res.json()) as { order: OrderItem };
+      setOrders((prev) =>
+        prev.map((o) => (o.id === order.id ? data.order : o))
+      );
+
+      showToast(
+        {
+          id: `undo-complete-${order.id}`,
+          title: "Pedido concluído · Desfazer",
+          message: `#${order.priorityOrder} — ${
+            order.company?.name ?? order.requesterName
+          }`,
+          actionLabel: "Desfazer",
+          onAction: () => {
+            void (async () => {
+              const undoRes = await authFetch(`/api/orders/${order.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ status: previousStatus }),
+              });
+              if (undoRes.ok) {
+                const undoData = (await undoRes.json()) as { order: OrderItem };
+                setOrders((prev) =>
+                  prev.map((o) => (o.id === order.id ? undoData.order : o))
+                );
+              }
+            })();
+          },
+        },
+        5000
+      );
+    },
+    [showToast]
+  );
+
+  const handleDeleteWithUndo = useCallback(
+    async (order: OrderItem) => {
+      setError(null);
+      const previous = orders;
+      setOrders((prev) => prev.filter((o) => o.id !== order.id));
+      setSelectedIds((prev) => prev.filter((id) => id !== order.id));
+
+      const res = await authFetch(`/api/orders/${order.id}`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        setOrders(previous);
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setError(data.error || "Erro ao excluir pedido.");
+        return;
+      }
+
+      showToast(
+        {
+          id: `undo-delete-${order.id}`,
+          title: "Pedido excluído · Desfazer",
+          message: `#${order.priorityOrder} — ${
+            order.company?.name ?? order.requesterName
+          }`,
+          actionLabel: "Desfazer",
+          onAction: () => {
+            void (async () => {
+              const restoreRes = await authFetch(`/api/orders/${order.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ restore: true }),
+              });
+              if (restoreRes.ok) {
+                await fetchDashboardData();
+              }
+            })();
+          },
+        },
+        5000
+      );
+    },
+    [orders, showToast, fetchDashboardData]
+  );
 
   async function persistReorder(reordered: OrderItem[], fallback: OrderItem[]) {
     const withUpdatedPriority = reordered.map((o, idx) => ({
@@ -405,27 +583,66 @@ export default function DashboardPage() {
     }
   }
 
+  const knownTrucks = useMemo(() => {
+    const set = new Set<string>();
+    for (const o of orders) {
+      if (o.truckUsed && o.truckUsed.trim()) {
+        set.add(o.truckUsed.trim());
+      }
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [orders]);
+
   const filteredOrders = useMemo(() => {
-    switch (filter) {
-      case "PENDENTE":
-        return orders.filter((o) => o.status === "PENDENTE");
-      case "AGENDADAS":
-        return orders.filter(
-          (o) =>
+    const byTab = orders.filter((o) => {
+      const schedYmd = getOrderScheduledYmd(o.scheduledDate);
+      switch (filter) {
+        case "PENDENTE":
+          return o.status === "PENDENTE";
+        case "HOJE":
+          return schedYmd === todayStr && o.status !== "CANCELADO";
+        case "ATRASADOS":
+          return (
+            o.status === "PENDENTE" &&
+            Boolean(schedYmd) &&
+            schedYmd < todayStr
+          );
+        case "AGENDADAS":
+          return (
             o.scheduledDate !== null &&
             o.status !== "CONCLUIDO" &&
             o.status !== "CANCELADO"
-        );
-      case "EM_ROTA":
-        return orders.filter((o) => o.status === "EM_ROTA");
-      case "CONCLUIDO":
-        return orders.filter((o) => o.status === "CONCLUIDO");
-      case "REVIEW":
-        return orders.filter((o) => o.needsReview || !o.company);
-      default:
-        return orders;
-    }
-  }, [orders, filter]);
+          );
+        case "CONCLUIDO":
+          return o.status === "CONCLUIDO";
+        case "REVISAO":
+          return isAdmin ? o.needsReview || !o.company : false;
+        case "TODOS":
+        default:
+          return true;
+      }
+    });
+
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return byTab;
+
+    return byTab.filter((o) => {
+      const companyName = o.company?.name?.toLowerCase() ?? "";
+      const fallbackNote = o.companyFallbackNote?.toLowerCase() ?? "";
+      const requester = o.requesterName.toLowerCase();
+      const phone = o.requesterPhone?.toLowerCase() ?? "";
+      const raw = o.rawMessage.toLowerCase();
+      const truck = o.truckUsed?.toLowerCase() ?? "";
+      return (
+        companyName.includes(q) ||
+        fallbackNote.includes(q) ||
+        requester.includes(q) ||
+        phone.includes(q) ||
+        raw.includes(q) ||
+        truck.includes(q)
+      );
+    });
+  }, [orders, filter, searchQuery, todayStr, isAdmin]);
 
   function handleMoveOrder(orderId: string, direction: "up" | "down") {
     const visibleIndex = filteredOrders.findIndex((o) => o.id === orderId);
@@ -462,20 +679,242 @@ export default function DashboardPage() {
     void persistReorder(next, orders);
   }
 
+  function handleToggleSelect(orderId: string) {
+    setSelectedIds((prev) =>
+      prev.includes(orderId)
+        ? prev.filter((id) => id !== orderId)
+        : [...prev, orderId]
+    );
+  }
+
+  async function handleBatchAction(action: "COMPLETE" | "ASSIGN_TRUCK") {
+    if (selectedIds.length === 0) return;
+    if (action === "ASSIGN_TRUCK" && !batchTruck.trim()) {
+      setError("Informe o caminhão para atribuir aos pedidos selecionados.");
+      return;
+    }
+
+    setBatchBusy(true);
+    setError(null);
+    try {
+      const res = await authFetch("/api/orders/batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          orderIds: selectedIds,
+          action,
+          truckUsed: action === "ASSIGN_TRUCK" ? batchTruck.trim() : undefined,
+        }),
+      });
+
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        count?: number;
+      };
+
+      if (!res.ok) {
+        setError(data.error || "Erro ao executar ação em lote.");
+        return;
+      }
+
+      setSelectedIds([]);
+      if (action === "ASSIGN_TRUCK") {
+        setBatchTruck("");
+      }
+      await fetchDashboardData();
+
+      showToast(
+        {
+          id: `batch-${Date.now()}`,
+          title:
+            action === "COMPLETE"
+              ? "Pedidos concluídos em lote"
+              : "Caminhão atribuído em lote",
+          message: `${data.count ?? selectedIds.length} pedido(s) atualizado(s).`,
+        },
+        4000
+      );
+    } catch {
+      setError("Erro de conexão ao processar ação em lote.");
+    } finally {
+      setBatchBusy(false);
+    }
+  }
+
+  async function handleCopyTodayRoute() {
+    const todayOrders = orders.filter((o) => {
+      if (o.status === "CONCLUIDO" || o.status === "CANCELADO") return false;
+      const schedYmd = getOrderScheduledYmd(o.scheduledDate);
+      return schedYmd === todayStr || o.status === "PENDENTE";
+    });
+
+    if (todayOrders.length === 0) {
+      showToast(
+        {
+          id: `route-empty-${Date.now()}`,
+          title: "Rota do dia",
+          message: "Nenhum pedido pendente ou agendado para hoje.",
+        },
+        3500
+      );
+      return;
+    }
+
+    const lines = todayOrders.map((o, idx) => {
+      const companyName =
+        o.company?.name ?? o.companyFallbackNote ?? o.requesterName;
+      const address = o.company?.address ? ` (${o.company.address})` : "";
+      const container =
+        o.containerType === "TAMBOR" ? "Tambor" : "Caixa/Caçamba";
+      return `${idx + 1}. ${companyName}${address} — ${o.actionType} ${o.quantity}x ${container}`;
+    });
+
+    const text = `Rota do dia (${todayStr.split("-").reverse().join("/")}) — Schifter Coletas:\n${lines.join("\n")}`;
+
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(
+        {
+          id: `route-copied-${Date.now()}`,
+          title: "Rota copiada!",
+          message: `${todayOrders.length} parada(s) copiada(s) para a área de transferência.`,
+        },
+        4000
+      );
+    } catch {
+      setError("Não foi possível copiar a rota para a área de transferência.");
+    }
+  }
+
+  async function handleExportCsv() {
+    setExportingCsv(true);
+    setError(null);
+    try {
+      const res = await authFetch("/api/orders/export-csv");
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setError(data.error || "Erro ao exportar CSV.");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "coletas-concluidas.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Erro de conexão ao exportar CSV.");
+    } finally {
+      setExportingCsv(false);
+    }
+  }
+
+  // Desktop keyboard shortcuts: j / k / Enter / c / /
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
+
+      if (e.key === "/") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      if (filteredOrders.length === 0) return;
+
+      if (e.key === "j") {
+        e.preventDefault();
+        setFocusedOrderId((prev) => {
+          if (!prev) return filteredOrders[0].id;
+          const idx = filteredOrders.findIndex((o) => o.id === prev);
+          if (idx === -1 || idx >= filteredOrders.length - 1) {
+            return filteredOrders[0].id;
+          }
+          return filteredOrders[idx + 1].id;
+        });
+      } else if (e.key === "k") {
+        e.preventDefault();
+        setFocusedOrderId((prev) => {
+          if (!prev) return filteredOrders[filteredOrders.length - 1].id;
+          const idx = filteredOrders.findIndex((o) => o.id === prev);
+          if (idx <= 0) {
+            return filteredOrders[filteredOrders.length - 1].id;
+          }
+          return filteredOrders[idx - 1].id;
+        });
+      } else if (e.key === "Enter" && focusedOrderId) {
+        e.preventDefault();
+        setExpandedOrderId((prev) =>
+          prev === focusedOrderId ? null : focusedOrderId
+        );
+      } else if (e.key === "c" && focusedOrderId) {
+        const focusedOrder = filteredOrders.find(
+          (o) => o.id === focusedOrderId
+        );
+        if (focusedOrder && focusedOrder.status !== "CONCLUIDO") {
+          e.preventDefault();
+          void handleCompleteWithUndo(focusedOrder);
+        }
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [filteredOrders, focusedOrderId, handleCompleteWithUndo]);
+
   const stats = useMemo(() => {
+    const overdue = orders.filter((o) => {
+      if (o.status !== "PENDENTE") return false;
+      const schedYmd = getOrderScheduledYmd(o.scheduledDate);
+      return Boolean(schedYmd) && schedYmd < todayStr;
+    }).length;
+
+    const today = orders.filter((o) => {
+      if (o.status === "CANCELADO") return false;
+      return getOrderScheduledYmd(o.scheduledDate) === todayStr;
+    }).length;
+
     return {
       total: orders.length,
       pending: orders.filter((o) => o.status === "PENDENTE").length,
+      today,
+      overdue,
       scheduled: orders.filter(
         (o) =>
           o.scheduledDate !== null &&
           o.status !== "CONCLUIDO" &&
           o.status !== "CANCELADO"
       ).length,
-      inRoute: orders.filter((o) => o.status === "EM_ROTA").length,
       review: orders.filter((o) => o.needsReview || !o.company).length,
     };
-  }, [orders]);
+  }, [orders, todayStr]);
+
+  const filterPills = useMemo(() => {
+    const base: { id: FilterOption; label: string; badge?: number }[] = [
+      { id: "PENDENTE", label: "Pendentes", badge: stats.pending },
+      { id: "HOJE", label: "Hoje", badge: stats.today },
+      { id: "ATRASADOS", label: "Atrasados", badge: stats.overdue },
+      { id: "AGENDADAS", label: "Agendadas" },
+      { id: "CONCLUIDO", label: "Concluídas (5 dias)" },
+      { id: "TODOS", label: "Todas" },
+    ];
+    if (isAdmin) {
+      base.push({ id: "REVISAO", label: "Revisão" });
+    }
+    return base;
+  }, [isAdmin, stats.pending, stats.today, stats.overdue]);
 
   if (loading || !user) {
     return (
@@ -485,7 +924,7 @@ export default function DashboardPage() {
           aria-hidden="true"
         />
         <p className="text-sm font-medium text-[var(--color-text-muted)]">
-          Carregando painel EcoColetas...
+          Carregando painel Schifter Coletas...
         </p>
       </div>
     );
@@ -513,10 +952,12 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Summary Cards */}
+        {/* Summary Cards (Desktop only so mobile goes straight to orders) */}
         <section
           aria-label="Resumo operacional"
-          className="mb-6 grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4"
+          className={`mb-6 hidden gap-3 sm:gap-4 md:grid ${
+            isAdmin ? "md:grid-cols-4" : "md:grid-cols-3"
+          }`}
         >
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
             <div className="flex items-center justify-between">
@@ -547,29 +988,17 @@ export default function DashboardPage() {
 
           <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wide text-sky-600 dark:text-sky-400">
-                Em Rota
-              </span>
-              <Truck className="h-4.5 w-4.5 text-sky-500" aria-hidden="true" />
-            </div>
-            <p className="mt-2 text-2xl font-bold text-[var(--color-text-main)]">
-              {stats.inRoute}
-            </p>
-          </div>
-
-          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
-                Para Revisar
+              <span className="text-xs font-semibold uppercase tracking-wide text-red-600 dark:text-red-400">
+                Atrasados
               </span>
               <AlertTriangle
-                className="h-4.5 w-4.5 text-amber-500"
+                className="h-4.5 w-4.5 text-red-600 dark:text-red-400"
                 aria-hidden="true"
               />
             </div>
             <div className="mt-2 flex items-baseline justify-between">
               <p className="text-2xl font-bold text-[var(--color-text-main)]">
-                {stats.review}
+                {stats.overdue}
               </p>
               <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--color-text-muted)]">
                 <ClipboardList className="h-3 w-3" aria-hidden="true" />
@@ -577,6 +1006,23 @@ export default function DashboardPage() {
               </span>
             </div>
           </div>
+
+          {isAdmin && (
+            <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                  Para revisar
+                </span>
+                <AlertTriangle
+                  className="h-4.5 w-4.5 text-amber-500"
+                  aria-hidden="true"
+                />
+              </div>
+              <p className="mt-2 text-2xl font-bold text-[var(--color-text-main)]">
+                {stats.review}
+              </p>
+            </div>
+          )}
         </section>
 
         {/* Main Content Grid */}
@@ -587,21 +1033,67 @@ export default function DashboardPage() {
         >
           {/* Queue Column */}
           <div className={isAdmin ? "xl:col-span-8" : ""}>
-            {/* Toolbar: Filters + Actions */}
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            {/* Search Bar + Quick Refresh */}
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <div className="relative min-w-[220px] flex-1">
+                <Search
+                  className="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-[var(--color-text-muted)]"
+                  aria-hidden="true"
+                />
+                <input
+                  ref={searchInputRef}
+                  type="search"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Buscar empresa, solicitante, telefone ou mensagem... (/)"
+                  aria-label="Buscar pedidos"
+                  className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-card)] py-2.5 pr-9 pl-10 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery("")}
+                    aria-label="Limpar busca"
+                    className="absolute top-1/2 right-2.5 -translate-y-1/2 rounded-md p-1 text-[var(--color-text-muted)] hover:bg-slate-100 dark:hover:bg-slate-800"
+                  >
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleRefresh}
+                disabled={refreshing}
+                className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-card)] px-3 py-2.5 text-xs font-semibold text-[var(--color-text-main)] shadow-2xs hover:bg-slate-50 disabled:opacity-60 dark:hover:bg-slate-800"
+              >
+                <RefreshCw
+                  className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
+                  aria-hidden="true"
+                />
+                <span>Atualizar</span>
+              </button>
+            </div>
+
+            {/* Filter Tabs Bar (Desktop only so mobile sees orders immediately) */}
+            <div className="mb-4 hidden flex-wrap items-center justify-between gap-3 md:flex">
               <div
                 className="flex flex-wrap items-center gap-1.5"
                 role="group"
                 aria-label="Filtrar pedidos por status"
               >
-                {FILTER_PILLS.map((pill) => {
+                {filterPills.map((pill) => {
                   const active = filter === pill.id;
-                  const isPendingTab = pill.id === "PENDENTE";
+                  const showBadge =
+                    typeof pill.badge === "number" &&
+                    (pill.id === "PENDENTE" ||
+                      pill.id === "ATRASADOS" ||
+                      pill.badge > 0);
                   return (
                     <button
                       key={pill.id}
                       type="button"
-                      onClick={() => setFilter(pill.id)}
+                      onClick={() => handleSelectFilter(pill.id)}
                       className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all ${
                         active
                           ? "bg-[#B91C1C] text-white shadow-xs"
@@ -609,63 +1101,135 @@ export default function DashboardPage() {
                       }`}
                     >
                       <span>{pill.label}</span>
-                      {isPendingTab && (
+                      {showBadge && (
                         <span
                           className={`rounded-full px-1.5 py-0.2 text-[11px] font-bold ${
                             active
                               ? "bg-white text-[#B91C1C]"
-                              : "bg-[#B91C1C] text-white"
+                              : pill.id === "ATRASADOS" && (pill.badge ?? 0) > 0
+                                ? "bg-red-600 text-white"
+                                : "bg-[#B91C1C] text-white"
                           }`}
                         >
-                          {stats.pending}
+                          {pill.badge}
                         </span>
                       )}
                     </button>
                   );
                 })}
               </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={handleRefresh}
-                  disabled={refreshing}
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-card)] px-3 py-2 text-xs font-semibold text-[var(--color-text-main)] shadow-2xs hover:bg-slate-50 disabled:opacity-60 dark:hover:bg-slate-800"
-                >
-                  <RefreshCw
-                    className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
-                    aria-hidden="true"
-                  />
-                  <span>Atualizar</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setSimulatorOpen(true)}
-                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#B91C1C] px-3.5 py-2 text-xs font-semibold text-white shadow-xs hover:bg-[#991B1B]"
-                >
-                  <MessageCircle className="h-4 w-4" aria-hidden="true" />
-                  <span>Simular WhatsApp</span>
-                </button>
-              </div>
             </div>
 
+            {/* Admin Productivity Bar */}
             {isAdmin && (
-              <p className="mb-3 text-xs text-[var(--color-text-muted)]">
-                Dica: toque em um card para agendar ou registrar a coleta.
-                Arraste os cards ou use as setas ↑ / ↓ para definir a
-                prioridade.
-              </p>
+              <div className="mb-4 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] px-3.5 py-2.5">
+                  <span className="text-xs font-medium text-[var(--color-text-muted)]">
+                    Produtividade Admin · Atalhos: <kbd className="rounded border px-1">j</kbd>/<kbd className="rounded border px-1">k</kbd> navegar, <kbd className="rounded border px-1">Enter</kbd> expandir, <kbd className="rounded border px-1">c</kbd> concluir, <kbd className="rounded border px-1">/</kbd> buscar
+                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyTodayRoute()}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-main)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-main)] hover:bg-slate-100 dark:hover:bg-slate-800"
+                    >
+                      <ClipboardCopy
+                        className="h-3.5 w-3.5"
+                        aria-hidden="true"
+                      />
+                      <span>Copiar rota do dia</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={exportingCsv}
+                      onClick={() => void handleExportCsv()}
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-main)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-main)] hover:bg-slate-100 disabled:opacity-60 dark:hover:bg-slate-800"
+                    >
+                      {exportingCsv ? (
+                        <Loader2
+                          className="h-3.5 w-3.5 animate-spin"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Download
+                          className="h-3.5 w-3.5"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span>Exportar CSV</span>
+                    </button>
+                  </div>
+                </div>
+
+                {selectedIds.length > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[#B91C1C]/30 bg-[#B91C1C]/5 px-3.5 py-2.5 dark:border-red-800 dark:bg-red-950/30">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-[#B91C1C] dark:text-red-300">
+                        {selectedIds.length} selecionado(s)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedIds([])}
+                        className="text-xs font-medium text-[var(--color-text-muted)] underline hover:no-underline"
+                      >
+                        Limpar seleção
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        type="text"
+                        list="truck-suggestions"
+                        value={batchTruck}
+                        onChange={(e) => setBatchTruck(e.target.value)}
+                        placeholder="Caminhão..."
+                        aria-label="Caminhão para atribuir em lote"
+                        className="w-40 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-card)] px-2.5 py-1.5 text-xs text-[var(--color-text-main)] focus:border-[#B91C1C] focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        disabled={batchBusy}
+                        onClick={() => void handleBatchAction("ASSIGN_TRUCK")}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E293B] px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50 dark:bg-slate-100 dark:text-[#0F172A] dark:hover:bg-slate-200"
+                      >
+                        <Truck className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Atribuir Caminhão</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={batchBusy}
+                        onClick={() => void handleBatchAction("COMPLETE")}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#15803D] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#166534] disabled:opacity-50"
+                      >
+                        <CheckCircle2
+                          className="h-3.5 w-3.5"
+                          aria-hidden="true"
+                        />
+                        <span>Concluir Selecionados</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
             <OrderQueue
               orders={filteredOrders}
               companies={companies}
               user={user}
+              knownTrucks={knownTrucks}
+              selectedIds={selectedIds}
+              focusedOrderId={focusedOrderId}
+              expandedOrderId={expandedOrderId}
+              onToggleExpand={setExpandedOrderId}
+              onToggleSelect={handleToggleSelect}
               onStatusChange={handleStatusChange}
               onUpdateOrder={handleUpdateOrder}
               onLinkCompany={handleLinkCompany}
-              onDeleteOrder={handleDeleteOrder}
+              onCompleteWithUndo={handleCompleteWithUndo}
+              onDeleteWithUndo={handleDeleteWithUndo}
               onMoveOrder={handleMoveOrder}
               onDropReorder={handleDropReorder}
             />
@@ -675,20 +1239,11 @@ export default function DashboardPage() {
           {isAdmin && (
             <aside className="space-y-6 xl:col-span-4">
               <RegistrationRequestsPanel />
+              <UserManagementPanel />
             </aside>
           )}
         </div>
       </main>
-
-      <WebhookSimulator
-        isOpen={simulatorOpen}
-        onClose={() => setSimulatorOpen(false)}
-        onOrderCreated={async () => {
-          if (user) {
-            await fetchDashboardData();
-          }
-        }}
-      />
 
       <NotificationToast toasts={toasts} onDismiss={dismissToast} />
     </div>

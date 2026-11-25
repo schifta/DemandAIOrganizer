@@ -8,10 +8,8 @@ import {
   Loader2,
   LogIn,
   Moon,
-  Recycle,
   RotateCcw,
   Sun,
-  Truck,
   UserPlus,
 } from "lucide-react";
 import { FONT_SCALES, usePreferences } from "@/components/ThemeProvider";
@@ -233,15 +231,13 @@ export default function LoginPage() {
       <div className="w-full max-w-md rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-6 shadow-xl shadow-slate-200/60 sm:p-8 dark:shadow-none">
         {/* Branding */}
         <div className="mb-6 flex flex-col items-center text-center">
-          <div className="relative mb-3 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#B91C1C] text-white shadow-md">
-            <Recycle className="h-7 w-7" aria-hidden="true" />
-            <Truck
-              className="absolute -right-1.5 -bottom-1.5 h-5 w-5 rounded-full bg-white p-0.5 text-[#1E293B] shadow dark:bg-[#0F172A] dark:text-[#F8FAFC]"
-              aria-hidden="true"
-            />
-          </div>
+          <img
+            src="/logo-schifter.png"
+            alt="Schifter Coletas"
+            className="mb-3 h-12 w-12 rounded-xl object-contain"
+          />
           <h1 className="text-2xl font-bold tracking-tight text-[var(--color-text-main)]">
-            EcoColetas
+            Schifter Coletas
           </h1>
           <p className="mt-1 text-sm text-[var(--color-text-muted)]">
             Controle de fila de coletas e trocas via WhatsApp

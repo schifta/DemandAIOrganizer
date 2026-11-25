@@ -101,7 +101,10 @@ export async function POST(request: Request) {
 
     const startOfDayUtc = getSaoPauloStartOfDayUtc();
     const usedToday = await prisma.registrationRequest.count({
-      where: { createdAt: { gte: startOfDayUtc } },
+      where: {
+        email: normalizedEmail,
+        createdAt: { gte: startOfDayUtc },
+      },
     });
 
     if (usedToday >= DAILY_LIMIT) {

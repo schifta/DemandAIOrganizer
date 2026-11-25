@@ -34,6 +34,7 @@ model AccessKey {
 model Company {
   id        String    @id @default(cuid())
   name      String
+  nickname  String?
   document  String?
   address   String?
   contacts  Contact[]
@@ -69,10 +70,24 @@ model Order {
   collectedBy         String?
   notes               String?
   completedAt         DateTime?
-  manuallyEdited      Boolean   @default(false)
-  lockedFields        String    @default("[]")
-  createdAt           DateTime  @default(now())
-  updatedAt           DateTime  @updatedAt
+  manuallyEdited      Boolean      @default(false)
+  lockedFields        String       @default("[]")
+  deletedAt           DateTime?
+  events              OrderEvent[]
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+}
+
+model OrderEvent {
+  id          String   @id @default(cuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actorId     String?
+  actorName   String
+  field       String
+  beforeValue String?
+  afterValue  String?
+  createdAt   DateTime @default(now())
 }
 
 model RegistrationRequest {

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireAuth } from "@/lib/auth";
 
-const VALID_STATUSES = ["PENDENTE", "EM_ROTA", "CONCLUIDO", "CANCELADO"] as const;
+const VALID_STATUSES = ["PENDENTE", "CONCLUIDO", "CANCELADO"] as const;
 const VALID_ACTION_TYPES = ["TROCA", "COLETA"] as const;
 const VALID_CONTAINER_TYPES = ["CAIXA_CACAMBA", "TAMBOR"] as const;
 
@@ -23,7 +23,9 @@ function parseLockedFields(raw: string): string[] {
   return [];
 }
 
-function parseScheduledDate(value: unknown): { ok: true; date: Date | null } | { ok: false } {
+function parseScheduledDate(
+  value: unknown
+): { ok: true; date: Date | null } | { ok: false } {
   if (value === null) {
     return { ok: true, date: null };
   }
@@ -43,6 +45,16 @@ function parseScheduledDate(value: unknown): { ok: true; date: Date | null } | {
   return { ok: true, date };
 }
 
+function serializeValue(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  return String(value);
+}
+
 export async function PATCH(request: Request, context: RouteContext) {
   try {
     const auth = await requireAuth();
@@ -60,6 +72,8 @@ export async function PATCH(request: Request, context: RouteContext) {
     }
 
     const {
+      restore,
+      saveContactPhone,
       status,
       scheduledDate,
       truckUsed,
@@ -72,6 +86,8 @@ export async function PATCH(request: Request, context: RouteContext) {
       containerType,
       quantity,
     } = body as {
+      restore?: unknown;
+      saveContactPhone?: unknown;
       status?: unknown;
       scheduledDate?: unknown;
       truckUsed?: unknown;
@@ -85,8 +101,79 @@ export async function PATCH(request: Request, context: RouteContext) {
       quantity?: unknown;
     };
 
+    const existingOrder = await prisma.order.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        status: true,
+        scheduledDate: true,
+        truckUsed: true,
+        collectedBy: true,
+        notes: true,
+        companyId: true,
+        needsReview: true,
+        requesterName: true,
+        requesterPhone: true,
+        actionType: true,
+        containerType: true,
+        quantity: true,
+        completedAt: true,
+        lockedFields: true,
+        deletedAt: true,
+      },
+    });
+
+    if (!existingOrder) {
+      return NextResponse.json(
+        { error: "Pedido não encontrado" },
+        { status: 404 }
+      );
+    }
+
+    if (restore === true) {
+      const order = await prisma.$transaction(async (tx) => {
+        const updated = await tx.order.update({
+          where: { id },
+          data: { deletedAt: null },
+          include: {
+            company: {
+              select: {
+                id: true,
+                name: true,
+                document: true,
+                address: true,
+              },
+            },
+          },
+        });
+
+        await tx.orderEvent.create({
+          data: {
+            orderId: id,
+            actorId: auth.user.userId,
+            actorName: auth.user.name,
+            field: "deletedAt",
+            beforeValue: existingOrder.deletedAt?.toISOString() ?? null,
+            afterValue: null,
+          },
+        });
+
+        return updated;
+      });
+
+      return NextResponse.json({ order });
+    }
+
+    if (existingOrder.deletedAt !== null) {
+      return NextResponse.json(
+        { error: "Pedido não encontrado" },
+        { status: 404 }
+      );
+    }
+
     const hasAdminOnlyFields =
       companyId !== undefined ||
+      saveContactPhone === true ||
       needsReview !== undefined ||
       requesterName !== undefined ||
       actionType !== undefined ||
@@ -107,24 +194,25 @@ export async function PATCH(request: Request, context: RouteContext) {
       );
     }
 
-    const existingOrder = await prisma.order.findUnique({
-      where: { id },
-      select: {
-        id: true,
-        lockedFields: true,
-        collectedBy: true,
-      },
-    });
-
-    if (!existingOrder) {
-      return NextResponse.json(
-        { error: "Pedido não encontrado" },
-        { status: 404 }
-      );
-    }
-
     const data: Prisma.OrderUpdateInput = {};
     const modifiedFields: string[] = [];
+    const pendingEvents: Array<{
+      field: string;
+      beforeValue: string | null;
+      afterValue: string | null;
+    }> = [];
+
+    const recordChange = (
+      field: string,
+      beforeRaw: unknown,
+      afterRaw: unknown
+    ) => {
+      const beforeValue = serializeValue(beforeRaw);
+      const afterValue = serializeValue(afterRaw);
+      if (beforeValue !== afterValue) {
+        pendingEvents.push({ field, beforeValue, afterValue });
+      }
+    };
 
     if (status !== undefined) {
       if (
@@ -135,12 +223,15 @@ export async function PATCH(request: Request, context: RouteContext) {
       }
       data.status = status;
       modifiedFields.push("status");
+      recordChange("status", existingOrder.status, status);
 
-      if (status === "CONCLUIDO") {
-        data.completedAt = new Date();
-      } else {
-        data.completedAt = null;
-      }
+      const nextCompletedAt = status === "CONCLUIDO" ? new Date() : null;
+      data.completedAt = nextCompletedAt;
+      recordChange(
+        "completedAt",
+        existingOrder.completedAt,
+        nextCompletedAt
+      );
     }
 
     if (scheduledDate !== undefined) {
@@ -153,34 +244,45 @@ export async function PATCH(request: Request, context: RouteContext) {
       }
       data.scheduledDate = parsedDate.date;
       modifiedFields.push("scheduledDate");
+      recordChange(
+        "scheduledDate",
+        existingOrder.scheduledDate,
+        parsedDate.date
+      );
     }
 
     if (truckUsed !== undefined) {
+      let nextTruckUsed: string | null;
       if (truckUsed === null) {
-        data.truckUsed = null;
+        nextTruckUsed = null;
       } else if (typeof truckUsed === "string") {
-        data.truckUsed = truckUsed.trim() || null;
+        nextTruckUsed = truckUsed.trim() || null;
       } else {
         return NextResponse.json(
           { error: "Caminhão utilizado inválido" },
           { status: 400 }
         );
       }
+      data.truckUsed = nextTruckUsed;
       modifiedFields.push("truckUsed");
+      recordChange("truckUsed", existingOrder.truckUsed, nextTruckUsed);
     }
 
+    let nextCollectedBy: string | null | undefined = undefined;
     if (collectedBy !== undefined) {
       if (collectedBy === null) {
-        data.collectedBy = null;
+        nextCollectedBy = null;
       } else if (typeof collectedBy === "string") {
-        data.collectedBy = collectedBy.trim() || null;
+        nextCollectedBy = collectedBy.trim() || null;
       } else {
         return NextResponse.json(
           { error: "Campo coletado por inválido" },
           { status: 400 }
         );
       }
+      data.collectedBy = nextCollectedBy;
       modifiedFields.push("collectedBy");
+      recordChange("collectedBy", existingOrder.collectedBy, nextCollectedBy);
     }
 
     const isCollectedByEmptyInput =
@@ -197,27 +299,39 @@ export async function PATCH(request: Request, context: RouteContext) {
       if (!modifiedFields.includes("collectedBy")) {
         modifiedFields.push("collectedBy");
       }
+      // Replace any earlier collectedBy event in case collectedBy was passed as ""
+      const idx = pendingEvents.findIndex((e) => e.field === "collectedBy");
+      if (idx >= 0) {
+        pendingEvents.splice(idx, 1);
+      }
+      recordChange("collectedBy", existingOrder.collectedBy, auth.user.name);
     }
 
     if (notes !== undefined) {
+      let nextNotes: string | null;
       if (notes === null) {
-        data.notes = null;
+        nextNotes = null;
       } else if (typeof notes === "string") {
-        data.notes = notes.trim() || null;
+        nextNotes = notes.trim() || null;
       } else {
         return NextResponse.json(
           { error: "Observações inválidas" },
           { status: 400 }
         );
       }
+      data.notes = nextNotes;
       modifiedFields.push("notes");
+      recordChange("notes", existingOrder.notes, nextNotes);
     }
 
+    let resolvedCompanyId: string | null = null;
     if (companyId !== undefined) {
       if (companyId === null || companyId === "") {
         data.company = { disconnect: true };
+        resolvedCompanyId = null;
       } else if (typeof companyId === "string") {
-        data.company = { connect: { id: companyId } };
+        resolvedCompanyId = companyId.trim();
+        data.company = { connect: { id: resolvedCompanyId } };
       } else {
         return NextResponse.json(
           { error: "companyId inválido" },
@@ -225,6 +339,7 @@ export async function PATCH(request: Request, context: RouteContext) {
         );
       }
       modifiedFields.push("companyId");
+      recordChange("companyId", existingOrder.companyId, resolvedCompanyId);
     }
 
     if (needsReview !== undefined) {
@@ -236,6 +351,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       }
       data.needsReview = needsReview;
       modifiedFields.push("needsReview");
+      recordChange("needsReview", existingOrder.needsReview, needsReview);
     }
 
     if (requesterName !== undefined) {
@@ -245,8 +361,14 @@ export async function PATCH(request: Request, context: RouteContext) {
           { status: 400 }
         );
       }
-      data.requesterName = requesterName.trim();
+      const nextRequesterName = requesterName.trim();
+      data.requesterName = nextRequesterName;
       modifiedFields.push("requesterName");
+      recordChange(
+        "requesterName",
+        existingOrder.requesterName,
+        nextRequesterName
+      );
     }
 
     if (actionType !== undefined) {
@@ -263,6 +385,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       }
       data.actionType = actionType;
       modifiedFields.push("actionType");
+      recordChange("actionType", existingOrder.actionType, actionType);
     }
 
     if (containerType !== undefined) {
@@ -279,6 +402,11 @@ export async function PATCH(request: Request, context: RouteContext) {
       }
       data.containerType = containerType;
       modifiedFields.push("containerType");
+      recordChange(
+        "containerType",
+        existingOrder.containerType,
+        containerType
+      );
     }
 
     if (quantity !== undefined) {
@@ -294,6 +422,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       }
       data.quantity = quantity;
       modifiedFields.push("quantity");
+      recordChange("quantity", existingOrder.quantity, quantity);
     }
 
     if (modifiedFields.length === 0) {
@@ -311,19 +440,57 @@ export async function PATCH(request: Request, context: RouteContext) {
     data.manuallyEdited = true;
     data.lockedFields = JSON.stringify(mergedLocked);
 
-    const order = await prisma.order.update({
-      where: { id },
-      data,
-      include: {
-        company: {
-          select: {
-            id: true,
-            name: true,
-            document: true,
-            address: true,
+    const shouldSaveContact =
+      saveContactPhone === true &&
+      resolvedCompanyId !== null &&
+      Boolean(existingOrder.requesterPhone?.trim());
+
+    const order = await prisma.$transaction(async (tx) => {
+      const updated = await tx.order.update({
+        where: { id },
+        data,
+        include: {
+          company: {
+            select: {
+              id: true,
+              name: true,
+              document: true,
+              address: true,
+            },
           },
         },
-      },
+      });
+
+      if (shouldSaveContact && resolvedCompanyId) {
+        const phone = existingOrder.requesterPhone!.trim();
+        await tx.contact.upsert({
+          where: { phone },
+          update: {
+            companyId: resolvedCompanyId,
+            name: updated.requesterName,
+          },
+          create: {
+            phone,
+            name: updated.requesterName,
+            companyId: resolvedCompanyId,
+          },
+        });
+      }
+
+      if (pendingEvents.length > 0) {
+        await tx.orderEvent.createMany({
+          data: pendingEvents.map((event) => ({
+            orderId: id,
+            actorId: auth.user.userId,
+            actorName: auth.user.name,
+            field: event.field,
+            beforeValue: event.beforeValue,
+            afterValue: event.afterValue,
+          })),
+        });
+      }
+
+      return updated;
     });
 
     return NextResponse.json({ order });
@@ -354,22 +521,39 @@ export async function DELETE(_request: Request, context: RouteContext) {
     }
 
     const { id } = await context.params;
-    await prisma.order.delete({
+    const existingOrder = await prisma.order.findUnique({
       where: { id },
+      select: { id: true, deletedAt: true },
     });
 
-    return NextResponse.json({ ok: true });
-  } catch (error) {
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2025"
-    ) {
+    if (!existingOrder || existingOrder.deletedAt !== null) {
       return NextResponse.json(
         { error: "Pedido não encontrado" },
         { status: 404 }
       );
     }
 
+    const now = new Date();
+    await prisma.$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id },
+        data: { deletedAt: now },
+      });
+
+      await tx.orderEvent.create({
+        data: {
+          orderId: id,
+          actorId: auth.user.userId,
+          actorName: auth.user.name,
+          field: "deletedAt",
+          beforeValue: null,
+          afterValue: now.toISOString(),
+        },
+      });
+    });
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
     console.error("Delete order error:", error);
     return NextResponse.json(
       { error: "Erro ao excluir pedido" },

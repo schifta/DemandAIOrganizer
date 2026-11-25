@@ -8,6 +8,8 @@ export interface ToastItem {
   title: string;
   message: string;
   createdAt: number;
+  actionLabel?: string;
+  onAction?: () => void;
 }
 
 interface NotificationToastProps {
@@ -48,6 +50,18 @@ export function NotificationToast({
             <p className="mt-0.5 text-xs leading-relaxed text-slate-600 dark:text-slate-300">
               {toast.message}
             </p>
+            {toast.actionLabel && toast.onAction && (
+              <button
+                type="button"
+                onClick={() => {
+                  toast.onAction?.();
+                  onDismiss(toast.id);
+                }}
+                className="mt-2 inline-flex items-center rounded-lg bg-[#B91C1C] px-2.5 py-1 text-xs font-semibold text-white hover:bg-[#991B1B]"
+              >
+                {toast.actionLabel}
+              </button>
+            )}
           </div>
 
           <button

@@ -1,6 +1,6 @@
 export type UserRole = "ADMIN_MASTER" | "ADMIN" | "OPERATOR";
 
-export type OrderStatus = "PENDENTE" | "EM_ROTA" | "CONCLUIDO" | "CANCELADO";
+export type OrderStatus = "PENDENTE" | "CONCLUIDO" | "CANCELADO";
 
 export type ActionType = "TROCA" | "COLETA";
 
@@ -55,8 +55,27 @@ export interface OrderItem {
   completedAt: string | null;
   manuallyEdited: boolean;
   lockedFields: string;
+  deletedAt?: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface OrderEventItem {
+  id: string;
+  orderId: string;
+  actorName: string;
+  field: string;
+  beforeValue: string | null;
+  afterValue: string | null;
+  createdAt: string;
+}
+
+export interface UserListItem {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  createdAt: string;
 }
 
 export interface RegistrationRequestItem {
