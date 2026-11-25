@@ -8,6 +8,26 @@ import {
 import { emitNewOrder } from "@/lib/order-events";
 import { filterAiUpdatePayload } from "@/lib/ai-guard";
 
+type PendingCompanyEntry = {
+  orderIds: string[];
+  phone: string;
+  remoteJid?: string;
+  senderName: string;
+  rawMessage: string;
+  createdAt: number;
+};
+
+const PENDING_COMPANY_TTL_MS = 30 * 60 * 1000;
+
+const globalForPendingCompany = globalThis as unknown as {
+  __schifterPendingCompany?: Map<string, PendingCompanyEntry>;
+};
+
+const pendingCompanyMap =
+  globalForPendingCompany.__schifterPendingCompany ??
+  new Map<string, PendingCompanyEntry>();
+globalForPendingCompany.__schifterPendingCompany = pendingCompanyMap;
+
 function normalizeForMatch(value: string): string {
   return value
     .normalize("NFD")
@@ -16,15 +36,28 @@ function normalizeForMatch(value: string): string {
     .trim();
 }
 
-async function sendEvolutionAutoReply(
-  recipientNumber: string
+function getBrasiliaGreeting(): "Bom dia" | "Boa tarde" | "Boa noite" {
+  const hourStr = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Sao_Paulo",
+    hour: "numeric",
+    hour12: false,
+  }).format(new Date());
+  const hour = Number.parseInt(hourStr, 10) % 24;
+  if (hour >= 5 && hour <= 11) return "Bom dia";
+  if (hour >= 12 && hour <= 17) return "Boa tarde";
+  return "Boa noite";
+}
+
+async function sendEvolutionText(
+  target: string,
+  text: string
 ): Promise<boolean> {
   const baseUrl = process.env.EVOLUTION_API_URL?.trim().replace(/\/+$/, "");
   const apiKey = process.env.EVOLUTION_API_KEY?.trim();
   const instance = process.env.EVOLUTION_INSTANCE?.trim();
-  const target = recipientNumber.trim();
+  const trimmedTarget = target.trim();
 
-  if (!baseUrl || !apiKey || !instance || !target) {
+  if (!baseUrl || !apiKey || !instance || !trimmedTarget) {
     return false;
   }
 
@@ -40,22 +73,87 @@ async function sendEvolutionAutoReply(
       },
       signal: AbortSignal.timeout(8000),
       body: JSON.stringify({
-        number: target,
-        text: "Bom dia, agendado!",
+        number: trimmedTarget,
+        text,
       }),
     });
 
     if (!response.ok) {
       console.error(
-        `Evolution API auto-reply failed with status ${response.status}`
+        `Evolution API sendText failed with status ${response.status}`
       );
       return false;
     }
 
     return true;
   } catch (error) {
-    console.error("Evolution API auto-reply error:", error);
+    console.error("Evolution API sendText error:", error);
     return false;
+  }
+}
+
+async function findOfficeGroupJid(): Promise<string | null> {
+  const configuredJid = process.env.EVOLUTION_OFFICE_GROUP_JID?.trim();
+  if (configuredJid) {
+    return configuredJid;
+  }
+
+  const baseUrl = process.env.EVOLUTION_API_URL?.trim().replace(/\/+$/, "");
+  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+  const instance = process.env.EVOLUTION_INSTANCE?.trim();
+
+  if (!baseUrl || !apiKey || !instance) {
+    return null;
+  }
+
+  try {
+    const endpoint = `${baseUrl}/group/fetchAllGroups/${encodeURIComponent(
+      instance
+    )}?getParticipants=false`;
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        apikey: apiKey,
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+
+    if (!response.ok) {
+      console.error(
+        `Evolution API fetchAllGroups failed with status ${response.status}`
+      );
+      return null;
+    }
+
+    const json: unknown = await response.json();
+    const groups: unknown[] = Array.isArray(json)
+      ? json
+      : typeof json === "object" &&
+          json !== null &&
+          Array.isArray((json as { data?: unknown }).data)
+        ? ((json as { data: unknown[] }).data)
+        : [];
+
+    for (const item of groups) {
+      if (typeof item !== "object" || item === null) continue;
+      const group = item as { id?: unknown; jid?: unknown; subject?: unknown };
+      if (
+        typeof group.subject === "string" &&
+        normalizeForMatch(group.subject).includes("escritorio")
+      ) {
+        if (typeof group.id === "string" && group.id.trim()) {
+          return group.id.trim();
+        }
+        if (typeof group.jid === "string" && group.jid.trim()) {
+          return group.jid.trim();
+        }
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error("Evolution API fetchAllGroups error:", error);
+    return null;
   }
 }
 
@@ -285,6 +383,64 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
+  if (parsed.phone) {
+    const pending = pendingCompanyMap.get(parsed.phone);
+    if (pending) {
+      if (Date.now() - pending.createdAt < PENDING_COMPANY_TTL_MS) {
+        pendingCompanyMap.delete(parsed.phone);
+
+        const { companyId: followUpCompanyId } = await resolveCompanyFromMessage(
+          {
+            phone: parsed.phone,
+            requesterName: parsed.senderName,
+            companyHint: parsed.text,
+            rawText: parsed.text,
+          }
+        );
+
+        if (followUpCompanyId) {
+          await prisma.order.updateMany({
+            where: { id: { in: pending.orderIds } },
+            data: {
+              companyId: followUpCompanyId,
+              needsReview: false,
+              companyFallbackNote: null,
+            },
+          });
+
+          await sendEvolutionText(
+            parsed.remoteJid || parsed.phone,
+            `${getBrasiliaGreeting()}, perfeito! Sua coleta foi agendada.`
+          );
+
+          return NextResponse.json(
+            {
+              ok: true,
+              companyResolvedOnFollowUp: true,
+              companyId: followUpCompanyId,
+            },
+            { status: 200 }
+          );
+        }
+
+        const officeGroupJid = await findOfficeGroupJid();
+        if (officeGroupJid) {
+          await sendEvolutionText(
+            officeGroupJid,
+            `⚠️ Atenção Escritório: O contato ${pending.senderName || parsed.phone} (${parsed.phone}) solicitou uma coleta ("${pending.rawMessage}"), pedimos o nome da empresa e ele respondeu "${parsed.text}", mas não foi possível identificar automaticamente. Verificar no painel.`
+          );
+        }
+
+        return NextResponse.json(
+          { ok: true, escalatedToOffice: true },
+          { status: 200 }
+        );
+      } else {
+        pendingCompanyMap.delete(parsed.phone);
+      }
+    }
+  }
+
   const extracted = await extractOrderWithNLP(parsed.text, parsed.senderName);
 
   if (!extracted.isOrderRequest) {
@@ -408,38 +564,66 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   });
   const nextPriority = (agg._max.priorityOrder ?? 0) + 1;
 
-  const order = await prisma.order.create({
-    data: {
-      requesterName: extracted.requesterName,
-      requesterPhone: parsed.phone || null,
-      companyId,
-      companyFallbackNote,
-      actionType: extracted.actionType,
-      containerType: extracted.containerType,
-      quantity: extracted.quantity,
-      rawMessage: parsed.text,
-      status: "PENDENTE",
-      priorityOrder: nextPriority,
-      needsReview,
-      manuallyEdited: false,
-      lockedFields: "[]",
-    },
-    include: {
-      company: true,
-    },
-  });
+  const createdOrders = [];
+  for (let i = 0; i < extracted.items.length; i++) {
+    const item = extracted.items[i];
+    const order = await prisma.order.create({
+      data: {
+        requesterName: extracted.requesterName,
+        requesterPhone: parsed.phone || null,
+        companyId,
+        companyFallbackNote,
+        actionType: item.actionType,
+        containerType: item.containerType,
+        quantity: item.quantity,
+        rawMessage: parsed.text,
+        status: "PENDENTE",
+        priorityOrder: nextPriority + i,
+        needsReview,
+        manuallyEdited: false,
+        lockedFields: "[]",
+      },
+      include: {
+        company: true,
+      },
+    });
+    emitNewOrder(order);
+    createdOrders.push(order);
+  }
 
-  emitNewOrder(order);
+  const greeting = getBrasiliaGreeting();
+  const replyTarget = parsed.remoteJid || parsed.phone;
+  let autoReplySent = false;
 
-  const autoReplySent = await sendEvolutionAutoReply(
-    parsed.remoteJid || parsed.phone
-  );
+  if (companyId === null) {
+    if (parsed.phone) {
+      pendingCompanyMap.set(parsed.phone, {
+        orderIds: createdOrders.map((o) => o.id),
+        phone: parsed.phone,
+        remoteJid: parsed.remoteJid,
+        senderName: extracted.requesterName,
+        rawMessage: parsed.text,
+        createdAt: Date.now(),
+      });
+    }
+    autoReplySent = await sendEvolutionText(
+      replyTarget,
+      `${greeting}! Para agendar sua coleta, poderia informar o nome da sua empresa?`
+    );
+  } else {
+    const confirmationText =
+      createdOrders.length > 1
+        ? `${greeting}, suas coletas foram agendadas!`
+        : `${greeting}, agendado!`;
+    autoReplySent = await sendEvolutionText(replyTarget, confirmationText);
+  }
 
   return NextResponse.json(
     {
       ok: true,
       extracted,
-      order,
+      order: createdOrders[0],
+      orders: createdOrders,
       autoReplySent,
     },
     { status: 201 }

@@ -153,7 +153,7 @@ export default function LoginPage() {
       setRegEmail("");
       setRegPassword("");
       setRegSuccess(
-        "Solicitação enviada! Aguarde a aprovação de qualquer administrador (válida por 24h; limite de 3 por dia)."
+        "Solicitação enviada! Aguarde a aprovação de qualquer administrador (válida por 24h)."
       );
     } catch {
       setError("Erro de conexão ao solicitar cadastro. Tente novamente.");
@@ -228,13 +228,13 @@ export default function LoginPage() {
       </div>
 
       {/* Auth Card */}
-      <div className="w-full max-w-md rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-6 shadow-xl shadow-slate-200/60 sm:p-8 dark:shadow-none">
+      <div className="w-full max-w-md rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-6 shadow-xl shadow-slate-200/60 sm:p-8 dark:shadow-2xl dark:shadow-black/50">
         {/* Branding */}
         <div className="mb-6 flex flex-col items-center text-center">
           <img
             src="/logo-schifter.png"
             alt="Schifter Coletas"
-            className="mb-3 h-12 w-12 rounded-xl object-contain"
+            className="mx-auto mb-3 h-14 w-auto max-w-[220px] object-contain"
           />
           <h1 className="text-2xl font-bold tracking-tight text-[var(--color-text-main)]">
             Schifter Coletas
@@ -246,7 +246,7 @@ export default function LoginPage() {
 
         {/* Tabs */}
         <div
-          className="mb-6 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1 dark:bg-slate-800"
+          className="mb-6 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1 dark:border dark:border-[var(--color-border)] dark:bg-[#090D16]"
           role="tablist"
           aria-label="Opções de autenticação"
         >
@@ -326,7 +326,7 @@ export default function LoginPage() {
                 placeholder="nome@ecocoletas.com.br"
                 value={loginEmail}
                 onChange={(e) => setLoginEmail(e.target.value)}
-                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
+                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[var(--color-primary)] focus:outline-none dark:bg-[#090D16] dark:placeholder:text-slate-500"
               />
             </div>
 
@@ -345,14 +345,14 @@ export default function LoginPage() {
                 placeholder="••••••••"
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
-                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
+                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[var(--color-primary)] focus:outline-none dark:bg-[#090D16] dark:placeholder:text-slate-500"
               />
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#B91C1C] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[#991B1B] disabled:cursor-not-allowed disabled:opacity-60"
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--color-primary)] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[var(--color-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? (
                 <>
@@ -385,7 +385,7 @@ export default function LoginPage() {
                 placeholder="Ex.: Ana Paula"
                 value={regName}
                 onChange={(e) => setRegName(e.target.value)}
-                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
+                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[var(--color-primary)] focus:outline-none dark:bg-[#090D16] dark:placeholder:text-slate-500"
               />
             </div>
 
@@ -404,7 +404,7 @@ export default function LoginPage() {
                 placeholder="operador@ecocoletas.com.br"
                 value={regEmail}
                 onChange={(e) => setRegEmail(e.target.value)}
-                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
+                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[var(--color-primary)] focus:outline-none dark:bg-[#090D16] dark:placeholder:text-slate-500"
               />
             </div>
 
@@ -424,14 +424,14 @@ export default function LoginPage() {
                 placeholder="Crie uma senha"
                 value={regPassword}
                 onChange={(e) => setRegPassword(e.target.value)}
-                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
+                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] px-3.5 py-2.5 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[var(--color-primary)] focus:outline-none dark:bg-[#090D16] dark:placeholder:text-slate-500"
               />
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[#B91C1C] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[#991B1B] disabled:cursor-not-allowed disabled:opacity-60"
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--color-primary)] px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[var(--color-primary-hover)] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {loading ? (
                 <>

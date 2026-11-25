@@ -27,8 +27,6 @@ function formatRemainingTime(expiresAt: string, nowMs: number): string {
 
 export function RegistrationRequestsPanel() {
   const [requests, setRequests] = useState<RegistrationRequestItem[]>([]);
-  const [usedToday, setUsedToday] = useState(0);
-  const [dailyLimit, setDailyLimit] = useState(3);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [selectedRoles, setSelectedRoles] = useState<
@@ -48,12 +46,8 @@ export function RegistrationRequestsPanel() {
       }
       const data = (await res.json()) as {
         requests: RegistrationRequestItem[];
-        usedToday: number;
-        dailyLimit: number;
       };
       setRequests(data.requests);
-      setUsedToday(data.usedToday);
-      setDailyLimit(data.dailyLimit ?? 3);
     } catch {
       setError("Erro de conexão ao buscar solicitações.");
     } finally {
@@ -155,16 +149,6 @@ export function RegistrationRequestsPanel() {
             aria-hidden="true"
           />
         </button>
-      </div>
-
-      {/* Daily Quota */}
-      <div className="mb-4 flex items-center justify-between rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-main)] px-3 py-2 text-xs">
-        <span className="font-medium text-[var(--color-text-muted)]">
-          Cota diária de cadastros
-        </span>
-        <span className="font-bold text-[#1E293B] dark:text-slate-100">
-          {usedToday} / {dailyLimit} solicitações hoje
-        </span>
       </div>
 
       {error && (

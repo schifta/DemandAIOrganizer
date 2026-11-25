@@ -4,25 +4,7 @@ import { hashPassword } from "@/lib/auth";
 import { cleanupExpiredRecords } from "@/lib/cleanup";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const DAILY_LIMIT = 3;
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
-
-function getSaoPauloStartOfDayUtc(): Date {
-  const now = new Date();
-  const spOffsetMs = 3 * 60 * 60 * 1000;
-  const spNow = new Date(now.getTime() - spOffsetMs);
-  return new Date(
-    Date.UTC(
-      spNow.getUTCFullYear(),
-      spNow.getUTCMonth(),
-      spNow.getUTCDate(),
-      3,
-      0,
-      0,
-      0
-    )
-  );
-}
 
 export async function POST(request: Request) {
   try {
@@ -96,24 +78,6 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: "Já existe uma solicitação pendente para este e-mail" },
         { status: 409 }
-      );
-    }
-
-    const startOfDayUtc = getSaoPauloStartOfDayUtc();
-    const usedToday = await prisma.registrationRequest.count({
-      where: {
-        email: normalizedEmail,
-        createdAt: { gte: startOfDayUtc },
-      },
-    });
-
-    if (usedToday >= DAILY_LIMIT) {
-      return NextResponse.json(
-        {
-          error:
-            "Limite diário de 3 solicitações de cadastro atingido. Tente novamente amanhã.",
-        },
-        { status: 429 }
       );
     }
 

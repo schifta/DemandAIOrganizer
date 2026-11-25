@@ -12,10 +12,8 @@ import {
   AlertTriangle,
   Calendar,
   CheckCircle2,
-  ClipboardCopy,
   ClipboardList,
   Clock,
-  Download,
   Loader2,
   RefreshCw,
   Search,
@@ -103,8 +101,6 @@ export default function DashboardPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchTruck, setBatchTruck] = useState("");
   const [batchBusy, setBatchBusy] = useState(false);
-  const [exportingCsv, setExportingCsv] = useState(false);
-  const [focusedOrderId, setFocusedOrderId] = useState<string | null>(null);
   const [expandedOrderId, setExpandedOrderId] = useState<string | null>(null);
 
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -787,7 +783,6 @@ export default function DashboardPage() {
   }
 
   async function handleExportCsv() {
-    setExportingCsv(true);
     setError(null);
     try {
       const res = await authFetch("/api/orders/export-csv");
@@ -807,72 +802,8 @@ export default function DashboardPage() {
       URL.revokeObjectURL(url);
     } catch {
       setError("Erro de conexão ao exportar CSV.");
-    } finally {
-      setExportingCsv(false);
     }
   }
-
-  // Desktop keyboard shortcuts: j / k / Enter / c / /
-  useEffect(() => {
-    function handleKeyDown(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (
-        tag === "INPUT" ||
-        tag === "TEXTAREA" ||
-        tag === "SELECT" ||
-        target?.isContentEditable
-      ) {
-        return;
-      }
-
-      if (e.key === "/") {
-        e.preventDefault();
-        searchInputRef.current?.focus();
-        return;
-      }
-
-      if (filteredOrders.length === 0) return;
-
-      if (e.key === "j") {
-        e.preventDefault();
-        setFocusedOrderId((prev) => {
-          if (!prev) return filteredOrders[0].id;
-          const idx = filteredOrders.findIndex((o) => o.id === prev);
-          if (idx === -1 || idx >= filteredOrders.length - 1) {
-            return filteredOrders[0].id;
-          }
-          return filteredOrders[idx + 1].id;
-        });
-      } else if (e.key === "k") {
-        e.preventDefault();
-        setFocusedOrderId((prev) => {
-          if (!prev) return filteredOrders[filteredOrders.length - 1].id;
-          const idx = filteredOrders.findIndex((o) => o.id === prev);
-          if (idx <= 0) {
-            return filteredOrders[filteredOrders.length - 1].id;
-          }
-          return filteredOrders[idx - 1].id;
-        });
-      } else if (e.key === "Enter" && focusedOrderId) {
-        e.preventDefault();
-        setExpandedOrderId((prev) =>
-          prev === focusedOrderId ? null : focusedOrderId
-        );
-      } else if (e.key === "c" && focusedOrderId) {
-        const focusedOrder = filteredOrders.find(
-          (o) => o.id === focusedOrderId
-        );
-        if (focusedOrder && focusedOrder.status !== "CONCLUIDO") {
-          e.preventDefault();
-          void handleCompleteWithUndo(focusedOrder);
-        }
-      }
-    }
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [filteredOrders, focusedOrderId, handleCompleteWithUndo]);
 
   const stats = useMemo(() => {
     const overdue = orders.filter((o) => {
@@ -932,7 +863,11 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-[var(--color-bg-main)]">
-      <Navbar user={user} />
+      <Navbar
+        user={user}
+        onCopyDailyRoute={isAdmin ? handleCopyTodayRoute : undefined}
+        onExportCsv={isAdmin ? handleExportCsv : undefined}
+      />
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
         {/* Error Banner */}
@@ -1045,9 +980,9 @@ export default function DashboardPage() {
                   type="search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Buscar empresa, solicitante, telefone ou mensagem... (/)"
+                  placeholder="Buscar empresa, solicitante, telefone ou mensagem..."
                   aria-label="Buscar pedidos"
-                  className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-card)] py-2.5 pr-9 pl-10 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[#B91C1C] focus:outline-none dark:placeholder:text-slate-500"
+                  className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-surface-card)] py-2.5 pr-9 pl-10 text-sm text-[var(--color-text-main)] placeholder:text-slate-400 focus:border-[var(--color-primary)] focus:outline-none dark:placeholder:text-slate-500"
                 />
                 {searchQuery && (
                   <button
@@ -1120,98 +1055,55 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Admin Productivity Bar */}
-            {isAdmin && (
-              <div className="mb-4 space-y-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] px-3.5 py-2.5">
-                  <span className="text-xs font-medium text-[var(--color-text-muted)]">
-                    Produtividade Admin · Atalhos: <kbd className="rounded border px-1">j</kbd>/<kbd className="rounded border px-1">k</kbd> navegar, <kbd className="rounded border px-1">Enter</kbd> expandir, <kbd className="rounded border px-1">c</kbd> concluir, <kbd className="rounded border px-1">/</kbd> buscar
+            {/* Batch Selection Bar (Admin) */}
+            {isAdmin && selectedIds.length > 0 && (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[#B91C1C]/30 bg-[#B91C1C]/5 px-3.5 py-2.5 dark:border-red-900/70 dark:bg-red-950/35">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-[#B91C1C] dark:text-red-300">
+                    {selectedIds.length} selecionado(s)
                   </span>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void handleCopyTodayRoute()}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-main)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-main)] hover:bg-slate-100 dark:hover:bg-slate-800"
-                    >
-                      <ClipboardCopy
-                        className="h-3.5 w-3.5"
-                        aria-hidden="true"
-                      />
-                      <span>Copiar rota do dia</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={exportingCsv}
-                      onClick={() => void handleExportCsv()}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-main)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-main)] hover:bg-slate-100 disabled:opacity-60 dark:hover:bg-slate-800"
-                    >
-                      {exportingCsv ? (
-                        <Loader2
-                          className="h-3.5 w-3.5 animate-spin"
-                          aria-hidden="true"
-                        />
-                      ) : (
-                        <Download
-                          className="h-3.5 w-3.5"
-                          aria-hidden="true"
-                        />
-                      )}
-                      <span>Exportar CSV</span>
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedIds([])}
+                    className="text-xs font-medium text-[var(--color-text-muted)] underline hover:no-underline"
+                  >
+                    Limpar seleção
+                  </button>
                 </div>
 
-                {selectedIds.length > 0 && (
-                  <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-[#B91C1C]/30 bg-[#B91C1C]/5 px-3.5 py-2.5 dark:border-red-800 dark:bg-red-950/30">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-[#B91C1C] dark:text-red-300">
-                        {selectedIds.length} selecionado(s)
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedIds([])}
-                        className="text-xs font-medium text-[var(--color-text-muted)] underline hover:no-underline"
-                      >
-                        Limpar seleção
-                      </button>
-                    </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    list="truck-suggestions"
+                    value={batchTruck}
+                    onChange={(e) => setBatchTruck(e.target.value)}
+                    placeholder="Caminhão..."
+                    aria-label="Caminhão para atribuir em lote"
+                    className="w-40 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-card)] px-2.5 py-1.5 text-xs text-[var(--color-text-main)] focus:border-[var(--color-primary)] focus:outline-none dark:bg-[#090D16]"
+                  />
+                  <button
+                    type="button"
+                    disabled={batchBusy}
+                    onClick={() => void handleBatchAction("ASSIGN_TRUCK")}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E293B] px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50 dark:bg-slate-100 dark:text-[#090D16] dark:hover:bg-slate-200"
+                  >
+                    <Truck className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Atribuir Caminhão</span>
+                  </button>
 
-                    <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        type="text"
-                        list="truck-suggestions"
-                        value={batchTruck}
-                        onChange={(e) => setBatchTruck(e.target.value)}
-                        placeholder="Caminhão..."
-                        aria-label="Caminhão para atribuir em lote"
-                        className="w-40 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface-card)] px-2.5 py-1.5 text-xs text-[var(--color-text-main)] focus:border-[#B91C1C] focus:outline-none"
-                      />
-                      <button
-                        type="button"
-                        disabled={batchBusy}
-                        onClick={() => void handleBatchAction("ASSIGN_TRUCK")}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#1E293B] px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50 dark:bg-slate-100 dark:text-[#0F172A] dark:hover:bg-slate-200"
-                      >
-                        <Truck className="h-3.5 w-3.5" aria-hidden="true" />
-                        <span>Atribuir Caminhão</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        disabled={batchBusy}
-                        onClick={() => void handleBatchAction("COMPLETE")}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-[#15803D] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#166534] disabled:opacity-50"
-                      >
-                        <CheckCircle2
-                          className="h-3.5 w-3.5"
-                          aria-hidden="true"
-                        />
-                        <span>Concluir Selecionados</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
+                  <button
+                    type="button"
+                    disabled={batchBusy}
+                    onClick={() => void handleBatchAction("COMPLETE")}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[#15803D] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#166534] disabled:opacity-50"
+                  >
+                    <CheckCircle2
+                      className="h-3.5 w-3.5"
+                      aria-hidden="true"
+                    />
+                    <span>Concluir Selecionados</span>
+                  </button>
+                </div>
               </div>
             )}
 
@@ -1221,7 +1113,7 @@ export default function DashboardPage() {
               user={user}
               knownTrucks={knownTrucks}
               selectedIds={selectedIds}
-              focusedOrderId={focusedOrderId}
+              focusedOrderId={null}
               expandedOrderId={expandedOrderId}
               onToggleExpand={setExpandedOrderId}
               onToggleSelect={handleToggleSelect}

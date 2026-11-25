@@ -24,12 +24,15 @@
 }
 
 .dark {
-  --color-bg-main: #0B1120;
-  --color-bg-alt: #0F172A;
-  --color-surface-card: #1E293B;
-  --color-border: #334155;
+  --color-bg-main: #090D16;
+  --color-bg-alt: #111827;
+  --color-surface-card: #131B2E;
+  --color-border: #243047;
   --color-text-main: #F8FAFC;
   --color-text-muted: #94A3B8;
+  --color-primary: #DC2626;
+  --color-primary-hover: #B91C1C;
+  --color-eco: #22C55E;
 }
 
 @layer base {

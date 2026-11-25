@@ -2,6 +2,8 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import {
+  ClipboardCopy,
+  Download,
   Moon,
   RotateCcw,
   Settings,
@@ -16,6 +18,8 @@ import { InstallAppButton } from "@/components/InstallAppButton";
 
 interface NavbarProps {
   user: AuthUser;
+  onCopyDailyRoute?: () => void;
+  onExportCsv?: () => void;
 }
 
 const ROLE_LABELS: Record<"ADMIN" | "OPERATOR", string> = {
@@ -30,7 +34,11 @@ const ROLE_BADGE_STYLES: Record<"ADMIN" | "OPERATOR", string> = {
     "bg-[#15803D]/10 text-[#15803D] border-[#15803D]/30 dark:bg-green-950/60 dark:text-green-300 dark:border-green-800",
 };
 
-export function Navbar({ user }: NavbarProps) {
+export function Navbar({
+  user,
+  onCopyDailyRoute,
+  onExportCsv,
+}: NavbarProps) {
   const {
     theme,
     toggleTheme,
@@ -79,7 +87,7 @@ export function Navbar({ user }: NavbarProps) {
           <img
             src="/logo-schifter.png"
             alt="Schifter Coletas"
-            className="h-10 w-10 rounded-xl object-contain"
+            className="h-10 w-auto max-w-[160px] object-contain"
           />
           <div>
             <h1 className="text-lg font-bold tracking-tight text-[var(--color-text-main)]">
@@ -129,7 +137,7 @@ export function Navbar({ user }: NavbarProps) {
               <div
                 role="menu"
                 aria-label="Menu de preferências"
-                className="absolute right-0 z-50 mt-2 w-72 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xl shadow-slate-900/10 dark:shadow-black/40"
+                className="absolute right-0 z-50 mt-2 w-72 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xl shadow-slate-900/10 dark:shadow-2xl dark:shadow-black/60"
               >
                 <div className="space-y-3.5">
                   {/* Theme Toggle */}
@@ -246,6 +254,49 @@ export function Navbar({ user }: NavbarProps) {
                       )}
                     </button>
                   </div>
+
+                  {/* Admin Actions (inside Gear menu) */}
+                  {(onCopyDailyRoute || onExportCsv) && (
+                    <div className="space-y-2 border-t border-[var(--color-border)] pt-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+                        Ações operacionais
+                      </p>
+                      {onCopyDailyRoute && (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            onCopyDailyRoute();
+                            setMenuOpen(false);
+                          }}
+                          className="flex w-full items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-main)] px-3 py-2 text-xs font-semibold text-[var(--color-text-main)] hover:bg-slate-100 dark:hover:bg-slate-800/80"
+                        >
+                          <ClipboardCopy
+                            className="h-3.5 w-3.5 text-[var(--color-text-muted)]"
+                            aria-hidden="true"
+                          />
+                          <span>Copiar rota do dia</span>
+                        </button>
+                      )}
+                      {onExportCsv && (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            onExportCsv();
+                            setMenuOpen(false);
+                          }}
+                          className="flex w-full items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-main)] px-3 py-2 text-xs font-semibold text-[var(--color-text-main)] hover:bg-slate-100 dark:hover:bg-slate-800/80"
+                        >
+                          <Download
+                            className="h-3.5 w-3.5 text-[var(--color-text-muted)]"
+                            aria-hidden="true"
+                          />
+                          <span>Exportar CSV</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
 
                   {/* Install App Button */}
                   <div className="border-t border-[var(--color-border)] pt-3">

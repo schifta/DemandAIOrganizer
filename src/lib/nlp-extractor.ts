@@ -1,6 +1,12 @@
 export type OrderActionType = "TROCA" | "COLETA";
 export type OrderContainerType = "CAIXA_CACAMBA" | "TAMBOR";
 
+export type ExtractedOrderItem = {
+  actionType: OrderActionType;
+  containerType: OrderContainerType;
+  quantity: number;
+};
+
 export type ExtractedOrderData = {
   isOrderRequest: boolean;
   requesterName: string;
@@ -8,6 +14,7 @@ export type ExtractedOrderData = {
   actionType: OrderActionType;
   containerType: OrderContainerType;
   quantity: number;
+  items: ExtractedOrderItem[];
 };
 
 const PORTUGUESE_NUMBER_WORDS: Record<string, number> = {
@@ -253,6 +260,55 @@ function extractCompanyHint(text: string): string | null {
   return null;
 }
 
+function extractContainerQuantity(
+  asciiText: string,
+  abbrevRegex: RegExp,
+  keywordsPattern: string
+): number | null {
+  const matchAbbrev = asciiText.match(abbrevRegex);
+  if (matchAbbrev) {
+    const parsed = parseInt(matchAbbrev[1], 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+  }
+
+  const digitsBefore = new RegExp(
+    `\\b(\\d{1,3})\\s*(?:x\\s*)?(?:de\\s+)?(?:${keywordsPattern})\\b`,
+    "i"
+  );
+  const matchDigitsBefore = asciiText.match(digitsBefore);
+  if (matchDigitsBefore) {
+    const parsed = parseInt(matchDigitsBefore[1], 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+  }
+
+  const wordKeys = Object.keys(PORTUGUESE_NUMBER_WORDS).join("|");
+  const wordsBefore = new RegExp(
+    `\\b(${wordKeys})\\s+(?:de\\s+)?(?:${keywordsPattern})\\b`,
+    "i"
+  );
+  const matchWordsBefore = asciiText.match(wordsBefore);
+  if (matchWordsBefore) {
+    const mapped = PORTUGUESE_NUMBER_WORDS[matchWordsBefore[1].toLowerCase()];
+    if (mapped) return mapped;
+  }
+
+  const digitsAfter = new RegExp(
+    `\\b(?:${keywordsPattern})\\s*[:(\\-]?\\s*(\\d{1,3})\\b`,
+    "i"
+  );
+  const matchDigitsAfter = asciiText.match(digitsAfter);
+  if (matchDigitsAfter) {
+    const parsed = parseInt(matchDigitsAfter[1], 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+  }
+
+  if (new RegExp(`\\b(?:${keywordsPattern})\\b`, "i").test(asciiText)) {
+    return 1;
+  }
+
+  return null;
+}
+
 /**
  * Deterministic Portuguese NLP fallback parser for waste collection orders.
  */
@@ -277,14 +333,37 @@ export function fallbackExtractOrder(
   );
   const actionType: OrderActionType = isTroca ? "TROCA" : "COLETA";
 
-  const isTambor =
-    /\b(tambor|tambores|bombona|bombonas)\b/i.test(asciiText) ||
-    TAMBOR_ABBREV_REGEX.test(asciiText);
-  const containerType: OrderContainerType = isTambor
-    ? "TAMBOR"
-    : "CAIXA_CACAMBA";
+  const caixaQty = extractContainerQuantity(
+    asciiText,
+    CAIXA_ABBREV_REGEX,
+    "caixas?|cacambas?"
+  );
+  const tamborQty = extractContainerQuantity(
+    asciiText,
+    TAMBOR_ABBREV_REGEX,
+    "tambores?|bombonas?"
+  );
 
-  const quantity = Math.max(1, extractQuantity(asciiText));
+  let items: ExtractedOrderItem[];
+  let containerType: OrderContainerType;
+  let quantity: number;
+
+  if (caixaQty !== null && tamborQty !== null) {
+    items = [
+      { actionType, containerType: "CAIXA_CACAMBA", quantity: caixaQty },
+      { actionType, containerType: "TAMBOR", quantity: tamborQty },
+    ];
+    containerType = items[0].containerType;
+    quantity = items[0].quantity;
+  } else {
+    const isTambor =
+      /\b(tambor|tambores|bombona|bombonas)\b/i.test(asciiText) ||
+      TAMBOR_ABBREV_REGEX.test(asciiText);
+    containerType = isTambor ? "TAMBOR" : "CAIXA_CACAMBA";
+    quantity = Math.max(1, extractQuantity(asciiText));
+    items = [{ actionType, containerType, quantity }];
+  }
+
   const requesterName = extractRequesterName(text, fallbackSenderName);
   const companyHint = extractCompanyHint(text);
 
@@ -295,6 +374,7 @@ export function fallbackExtractOrder(
     actionType,
     containerType,
     quantity,
+    items,
   };
 }
 
@@ -382,13 +462,57 @@ function sanitizeExtractedData(
       ? raw.isOrderRequest
       : fallback.isOrderRequest;
 
+  const sanitizedItems: ExtractedOrderItem[] = [];
+  if (Array.isArray(raw.items)) {
+    for (const rawItem of raw.items) {
+      if (!isRecord(rawItem)) continue;
+      const itemAction =
+        typeof rawItem.actionType === "string"
+          ? rawItem.actionType.trim().toUpperCase()
+          : "";
+      const itemContainer =
+        typeof rawItem.containerType === "string"
+          ? rawItem.containerType.trim().toUpperCase()
+          : "";
+      if (
+        (itemAction !== "TROCA" && itemAction !== "COLETA") ||
+        (itemContainer !== "CAIXA_CACAMBA" && itemContainer !== "TAMBOR")
+      ) {
+        continue;
+      }
+      let itemQty = 1;
+      if (
+        typeof rawItem.quantity === "number" &&
+        Number.isFinite(rawItem.quantity)
+      ) {
+        itemQty = Math.max(1, Math.round(rawItem.quantity));
+      } else if (
+        typeof rawItem.quantity === "string" &&
+        /^\d+$/.test(rawItem.quantity.trim())
+      ) {
+        itemQty = Math.max(1, parseInt(rawItem.quantity.trim(), 10));
+      }
+      sanitizedItems.push({
+        actionType: itemAction,
+        containerType: itemContainer,
+        quantity: itemQty,
+      });
+    }
+  }
+
+  const items: ExtractedOrderItem[] =
+    sanitizedItems.length > 0
+      ? sanitizedItems
+      : [{ actionType, containerType, quantity }];
+
   return {
     isOrderRequest,
     requesterName,
     companyHint,
-    actionType,
-    containerType,
-    quantity,
+    actionType: items[0].actionType,
+    containerType: items[0].containerType,
+    quantity: items[0].quantity,
+    items,
   };
 }
 
@@ -401,6 +525,7 @@ function buildExtractionPrompt(
     "Regras obrigatórias:",
     '- Saudações ou mensagens curtas sem intenção clara de pedido ("Oi", "Olá", "Bom dia", "Ok", "Tudo bem?", "Obrigado") DEVEM retornar "isOrderRequest": false.',
     '- Abreviações comuns de WhatsApp: número seguido de "t", "tb" ou "tbs" (ex: "8t", "4 t") significa "TAMBOR" com aquela quantidade; número seguido de "cx" ou "cxs" (ex: "2cx") significa "CAIXA_CACAMBA" com aquela quantidade.',
+    '- Se a mensagem pedir múltiplos tipos de recipientes (ex: "1 cx e 5t", "2 caixas e 3 tambores"), inclua cada um como um item separado no array "items" e mantenha actionType, containerType e quantity iguais ao primeiro item.',
     "Responda EXCLUSIVAMENTE com um objeto JSON válido seguindo exatamente este schema:",
     "{",
     '  "isOrderRequest": boolean (true SOMENTE se for pedido real de coleta, troca, agendamento, retirada ou envio de caixas/caçambas/tambores/resíduos; false para saudações, agradecimentos ou conversas comuns),',
@@ -408,7 +533,8 @@ function buildExtractionPrompt(
     '  "companyHint": string | null (nome da empresa mencionada ou null se não houver),',
     '  "actionType": "TROCA" | "COLETA" ("TROCA" se pedir troca/substituição; caso contrário "COLETA"),',
     '  "containerType": "CAIXA_CACAMBA" | "TAMBOR" ("TAMBOR" para tambor/bombona; "CAIXA_CACAMBA" para caixa/caçamba),',
-    '  "quantity": number (inteiro >= 1; padrão 1 se não especificado)',
+    '  "quantity": number (inteiro >= 1; padrão 1 se não especificado),',
+    '  "items": Array<{ "actionType": "TROCA" | "COLETA", "containerType": "CAIXA_CACAMBA" | "TAMBOR", "quantity": number }> (lista com todos os itens do pedido)',
     "}",
     "",
     `Nome do remetente no WhatsApp (fallback): ${fallbackSenderName?.trim() || "não informado"}`,
@@ -451,6 +577,21 @@ async function callGeminiExtractor(
               enum: ["CAIXA_CACAMBA", "TAMBOR"],
             },
             quantity: { type: "INTEGER" },
+            items: {
+              type: "ARRAY",
+              items: {
+                type: "OBJECT",
+                properties: {
+                  actionType: { type: "STRING", enum: ["TROCA", "COLETA"] },
+                  containerType: {
+                    type: "STRING",
+                    enum: ["CAIXA_CACAMBA", "TAMBOR"],
+                  },
+                  quantity: { type: "INTEGER" },
+                },
+                required: ["actionType", "containerType", "quantity"],
+              },
+            },
           },
           required: [
             "isOrderRequest",
@@ -459,6 +600,7 @@ async function callGeminiExtractor(
             "actionType",
             "containerType",
             "quantity",
+            "items",
           ],
         },
       },
