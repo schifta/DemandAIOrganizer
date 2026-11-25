@@ -13,6 +13,49 @@ function normalizeForMatch(value: string): string {
     .trim();
 }
 
+async function sendEvolutionAutoReply(
+  recipientNumber: string
+): Promise<boolean> {
+  const baseUrl = process.env.EVOLUTION_API_URL?.trim().replace(/\/+$/, "");
+  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+  const instance = process.env.EVOLUTION_INSTANCE?.trim();
+  const target = recipientNumber.trim();
+
+  if (!baseUrl || !apiKey || !instance || !target) {
+    return false;
+  }
+
+  try {
+    const endpoint = `${baseUrl}/message/sendText/${encodeURIComponent(
+      instance
+    )}`;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: apiKey,
+      },
+      signal: AbortSignal.timeout(8000),
+      body: JSON.stringify({
+        number: target,
+        text: "Bom dia, agendado!",
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(
+        `Evolution API auto-reply failed with status ${response.status}`
+      );
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Evolution API auto-reply error:", error);
+    return false;
+  }
+}
+
 async function resolveCompanyFromMessage(params: {
   phone: string;
   requesterName: string;
@@ -159,6 +202,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const extracted = await extractOrderWithNLP(parsed.text, parsed.senderName);
 
+  if (!extracted.isOrderRequest) {
+    return NextResponse.json(
+      {
+        ignored: true,
+        isOrderRequest: false,
+        reason: "Mensagem comum ignorada (não é pedido de coleta/troca)",
+      },
+      { status: 200 }
+    );
+  }
+
   const { companyId, companyFallbackNote } = await resolveCompanyFromMessage({
     phone: parsed.phone,
     requesterName: extracted.requesterName,
@@ -250,11 +304,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   emitNewOrder(order);
 
+  const autoReplySent = await sendEvolutionAutoReply(
+    parsed.remoteJid || parsed.phone
+  );
+
   return NextResponse.json(
     {
       ok: true,
       extracted,
       order,
+      autoReplySent,
     },
     { status: 201 }
   );

@@ -2,6 +2,7 @@ export type OrderActionType = "TROCA" | "COLETA";
 export type OrderContainerType = "CAIXA_CACAMBA" | "TAMBOR";
 
 export type ExtractedOrderData = {
+  isOrderRequest: boolean;
   requesterName: string;
   companyHint: string | null;
   actionType: OrderActionType;
@@ -234,6 +235,11 @@ export function fallbackExtractOrder(
 ): ExtractedOrderData {
   const asciiText = stripAccents(text).toLowerCase();
 
+  const isOrderRequest =
+    /\b(troca|trocar|substituir|substituicao|substituicoes|coleta|coletar|retirar|retirada|buscar|caixa|caixas|cacamba|cacambas|tambor|tambores|bombona|bombonas|container|residuo|residuos|sucata)\b/i.test(
+      asciiText
+    );
+
   const isTroca = /\b(troca|trocar|substituir|substituicao|substituicoes)\b/i.test(
     asciiText
   );
@@ -249,6 +255,7 @@ export function fallbackExtractOrder(
   const companyHint = extractCompanyHint(text);
 
   return {
+    isOrderRequest,
     requesterName,
     companyHint,
     actionType,
@@ -334,7 +341,13 @@ function sanitizeExtractedData(
     companyHint = fallback.companyHint;
   }
 
+  const isOrderRequest =
+    typeof raw.isOrderRequest === "boolean"
+      ? raw.isOrderRequest
+      : fallback.isOrderRequest;
+
   return {
+    isOrderRequest,
     requesterName,
     companyHint,
     actionType,
@@ -351,6 +364,7 @@ function buildExtractionPrompt(
     "Extraia os dados estruturados de um pedido de coleta/troca de resíduos recebido via WhatsApp em português.",
     "Responda EXCLUSIVAMENTE com um objeto JSON válido seguindo exatamente este schema:",
     "{",
+    '  "isOrderRequest": boolean (true SOMENTE se for pedido real de coleta, troca, retirada ou envio de caixas/caçambas/tambores/resíduos; false para saudações, agradecimentos ou conversas comuns como "Bom dia", "Obrigado", "Ok"),',
     '  "requesterName": string (nome do solicitante; se não estiver na mensagem use o nome do remetente informado ou "Solicitante WhatsApp"),',
     '  "companyHint": string | null (nome da empresa mencionada ou null se não houver),',
     '  "actionType": "TROCA" | "COLETA" ("TROCA" se pedir troca/substituição; caso contrário "COLETA"),',
@@ -389,6 +403,7 @@ async function callGeminiExtractor(
         responseSchema: {
           type: "OBJECT",
           properties: {
+            isOrderRequest: { type: "BOOLEAN" },
             requesterName: { type: "STRING" },
             companyHint: { type: "STRING", nullable: true },
             actionType: { type: "STRING", enum: ["TROCA", "COLETA"] },
@@ -399,6 +414,7 @@ async function callGeminiExtractor(
             quantity: { type: "INTEGER" },
           },
           required: [
+            "isOrderRequest",
             "requesterName",
             "companyHint",
             "actionType",

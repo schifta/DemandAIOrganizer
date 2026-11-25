@@ -2,6 +2,7 @@ export type WhatsAppProvider = "evolution" | "meta" | "simulator";
 
 export type ParsedWhatsAppMessage = {
   phone: string;
+  remoteJid?: string;
   senderName: string;
   text: string;
   provider: WhatsAppProvider;
@@ -72,14 +73,13 @@ function parseEvolutionPayload(
   const text = message ? extractEvolutionText(message) : null;
   if (!text) return null;
 
-  const rawPhone =
-    (key ? asNonEmptyString(key.remoteJid) : null) ??
-    asNonEmptyString(body.sender) ??
-    "";
+  const rawRemoteJid = key ? asNonEmptyString(key.remoteJid) : null;
+  const rawPhone = rawRemoteJid ?? asNonEmptyString(body.sender) ?? "";
   const senderName = asNonEmptyString(data.pushName) ?? "";
 
   return {
     phone: normalizePhone(rawPhone),
+    ...(rawRemoteJid ? { remoteJid: rawRemoteJid } : {}),
     senderName,
     text,
     provider: "evolution",
