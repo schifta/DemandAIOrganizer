@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "prisma db push --skip-generate && tsx prisma/seed.ts && next start",
+    "postinstall": "prisma generate",
     "lint": "next lint",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
@@ -17,8 +18,10 @@
     "jose": "^6.0.0",
     "lucide-react": "^1.0.0",
     "next": "^15.5.12",
+    "prisma": "^6.6.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "tsx": "^4.19.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.0",
@@ -29,9 +32,7 @@
     "@types/react-dom": "^19.1.0",
     "eslint": "^9.23.0",
     "eslint-config-next": "^15.5.12",
-    "prisma": "^6.6.0",
     "tailwindcss": "^4.1.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.8.3"
   }
 }

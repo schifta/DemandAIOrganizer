@@ -4,18 +4,28 @@ import bcrypt from "bcryptjs";
 const prisma = new PrismaClient();
 
 async function main() {
-  const adminPasswordHash = await bcrypt.hash("Admin@123", 10);
+  const adminEmail = (process.env.ADMIN_EMAIL || "admin@ecocoletas.com")
+    .trim()
+    .toLowerCase();
+  const adminPassword = process.env.ADMIN_PASSWORD || "Admin@123";
+  const adminName = (process.env.ADMIN_NAME || "Administrador Master").trim();
+  const adminPasswordHash = await bcrypt.hash(adminPassword, 10);
 
   await prisma.user.upsert({
-    where: { email: "admin@ecocoletas.com" },
-    update: {},
+    where: { email: adminEmail },
+    update: {
+      name: adminName,
+      passwordHash: adminPasswordHash,
+      role: "ADMIN_MASTER",
+    },
     create: {
-      name: "Administrador Master",
-      email: "admin@ecocoletas.com",
+      name: adminName,
+      email: adminEmail,
       passwordHash: adminPasswordHash,
       role: "ADMIN_MASTER",
     },
   });
+  console.log(`Admin Master ensured for ${adminEmail}`);
 
   const sampleCompanies = [
     {
