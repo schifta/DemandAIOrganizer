@@ -28,6 +28,21 @@ const PORTUGUESE_NUMBER_WORDS: Record<string, number> = {
 const CONTAINER_KEYWORDS =
   "tambores|tambor|bombonas|bombona|caixas|caixa|cacambas|cacamba";
 
+const TAMBOR_ABBREV_REGEX = /\b(\d{1,3})\s*(?:t|tb|tbs)\b/i;
+const CAIXA_ABBREV_REGEX = /\b(\d{1,3})\s*(?:cx|cxs)\b/i;
+
+const GREETING_ONLY_REGEX =
+  /^(?:oi+|ol[aá]+|opa+|e\s*a[ií]+|bom\s+dia|boa\s+tarde|boa\s+noite|tudo\s+bem|td\s+bem|blz|beleza|ok(?:ay)?|obrigad[oa]|vlw|valeu|show|top|perfeito|combinado|certo|sim|n[aã]o|tchau|at[eé]\s+(?:mais|logo))$/i;
+
+function isGreetingOrChitchat(asciiText: string): boolean {
+  const cleaned = asciiText
+    .replace(/[!?.…,;:\-_/\\()[\]{}"'`~*]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned.length < 2) return true;
+  return GREETING_ONLY_REGEX.test(cleaned);
+}
+
 const NAME_STOP_WORDS = new Set([
   "da",
   "do",
@@ -86,6 +101,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function extractQuantity(asciiText: string): number {
+  const matchTamborAbbrev = asciiText.match(TAMBOR_ABBREV_REGEX);
+  if (matchTamborAbbrev) {
+    const parsed = parseInt(matchTamborAbbrev[1], 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+  }
+
+  const matchCaixaAbbrev = asciiText.match(CAIXA_ABBREV_REGEX);
+  if (matchCaixaAbbrev) {
+    const parsed = parseInt(matchCaixaAbbrev[1], 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+  }
+
   const digitsBeforeContainer = new RegExp(
     `\\b(\\d{1,3})\\s*(?:x\\s*)?(?:de\\s+)?(?:${CONTAINER_KEYWORDS})\\b`,
     "i"
@@ -235,17 +262,24 @@ export function fallbackExtractOrder(
 ): ExtractedOrderData {
   const asciiText = stripAccents(text).toLowerCase();
 
-  const isOrderRequest =
-    /\b(troca|trocar|substituir|substituicao|substituicoes|coleta|coletar|retirar|retirada|buscar|caixa|caixas|cacamba|cacambas|tambor|tambores|bombona|bombonas|container|residuo|residuos|sucata)\b/i.test(
+  const hasExplicitOrderTerm =
+    /\b(coleta|coletar|troca|trocar|agendar|agendamento|caixa|caixas|cacamba|cacambas|tambor|tambores|bombona|bombonas)\b/i.test(
       asciiText
-    );
+    ) ||
+    TAMBOR_ABBREV_REGEX.test(asciiText) ||
+    CAIXA_ABBREV_REGEX.test(asciiText);
+
+  const isOrderRequest =
+    !isGreetingOrChitchat(asciiText) && hasExplicitOrderTerm;
 
   const isTroca = /\b(troca|trocar|substituir|substituicao|substituicoes)\b/i.test(
     asciiText
   );
   const actionType: OrderActionType = isTroca ? "TROCA" : "COLETA";
 
-  const isTambor = /\b(tambor|tambores|bombona|bombonas)\b/i.test(asciiText);
+  const isTambor =
+    /\b(tambor|tambores|bombona|bombonas)\b/i.test(asciiText) ||
+    TAMBOR_ABBREV_REGEX.test(asciiText);
   const containerType: OrderContainerType = isTambor
     ? "TAMBOR"
     : "CAIXA_CACAMBA";
@@ -341,8 +375,10 @@ function sanitizeExtractedData(
     companyHint = fallback.companyHint;
   }
 
-  const isOrderRequest =
-    typeof raw.isOrderRequest === "boolean"
+  const asciiOriginal = stripAccents(originalText).toLowerCase();
+  const isOrderRequest = isGreetingOrChitchat(asciiOriginal)
+    ? false
+    : typeof raw.isOrderRequest === "boolean"
       ? raw.isOrderRequest
       : fallback.isOrderRequest;
 
@@ -362,9 +398,12 @@ function buildExtractionPrompt(
 ): string {
   return [
     "Extraia os dados estruturados de um pedido de coleta/troca de resíduos recebido via WhatsApp em português.",
+    "Regras obrigatórias:",
+    '- Saudações ou mensagens curtas sem intenção clara de pedido ("Oi", "Olá", "Bom dia", "Ok", "Tudo bem?", "Obrigado") DEVEM retornar "isOrderRequest": false.',
+    '- Abreviações comuns de WhatsApp: número seguido de "t", "tb" ou "tbs" (ex: "8t", "4 t") significa "TAMBOR" com aquela quantidade; número seguido de "cx" ou "cxs" (ex: "2cx") significa "CAIXA_CACAMBA" com aquela quantidade.',
     "Responda EXCLUSIVAMENTE com um objeto JSON válido seguindo exatamente este schema:",
     "{",
-    '  "isOrderRequest": boolean (true SOMENTE se for pedido real de coleta, troca, retirada ou envio de caixas/caçambas/tambores/resíduos; false para saudações, agradecimentos ou conversas comuns como "Bom dia", "Obrigado", "Ok"),',
+    '  "isOrderRequest": boolean (true SOMENTE se for pedido real de coleta, troca, agendamento, retirada ou envio de caixas/caçambas/tambores/resíduos; false para saudações, agradecimentos ou conversas comuns),',
     '  "requesterName": string (nome do solicitante; se não estiver na mensagem use o nome do remetente informado ou "Solicitante WhatsApp"),',
     '  "companyHint": string | null (nome da empresa mencionada ou null se não houver),',
     '  "actionType": "TROCA" | "COLETA" ("TROCA" se pedir troca/substituição; caso contrário "COLETA"),',

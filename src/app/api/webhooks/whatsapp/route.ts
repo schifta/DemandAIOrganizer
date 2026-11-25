@@ -276,6 +276,47 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
   }
 
+  // 5-minute per-contact cooldown to avoid duplicate orders from sequential messages
+  const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+  const phoneOrConditions: Array<
+    { requesterPhone: string } | { requesterPhone: { endsWith: string } }
+  > = [];
+
+  if (parsed.phone) {
+    phoneOrConditions.push({ requesterPhone: parsed.phone });
+    if (parsed.phone.length >= 8) {
+      phoneOrConditions.push({
+        requesterPhone: { endsWith: parsed.phone.slice(-8) },
+      });
+    }
+  }
+  if (parsed.remoteJid) {
+    phoneOrConditions.push({ requesterPhone: parsed.remoteJid });
+  }
+
+  if (phoneOrConditions.length > 0) {
+    const recentOrder = await prisma.order.findFirst({
+      where: {
+        createdAt: { gte: fiveMinutesAgo },
+        OR: phoneOrConditions,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (recentOrder) {
+      return NextResponse.json(
+        {
+          ignored: true,
+          cooldown: true,
+          reason:
+            "Contato em janela de cooldown de 5 minutos (pedido recente já registrado)",
+          recentOrderId: recentOrder.id,
+        },
+        { status: 200 }
+      );
+    }
+  }
+
   const agg = await prisma.order.aggregate({
     _max: { priorityOrder: true },
   });
