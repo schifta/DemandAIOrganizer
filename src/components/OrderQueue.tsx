@@ -8,6 +8,7 @@ import {
   Box,
   Building2,
   Calendar,
+  CheckCheck,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -765,9 +766,28 @@ export function OrderQueue({
                   </div>
                 </div>
 
-                {/* Bottom Actions Row: Direct Complete + Expand Toggle + Admin Delete */}
-                <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--color-border)] pt-3">
-                  <div className="flex items-center gap-2">
+                {/* Bottom Actions Row: Direct Complete + Approve for Drivers + Expand Toggle + Admin Delete */}
+                <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-[var(--color-border)] pt-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {isAdmin && order.needsReview && (
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void onUpdateOrder(order.id, { needsReview: false });
+                        }}
+                        title="Aprovar e liberar para motoristas"
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white shadow-2xs hover:bg-amber-700 disabled:opacity-60 dark:bg-amber-500 dark:hover:bg-amber-600"
+                      >
+                        <CheckCheck
+                          className="h-3.5 w-3.5"
+                          aria-hidden="true"
+                        />
+                        <span>Liberar para motoristas</span>
+                      </button>
+                    )}
+
                     {order.status !== "CONCLUIDO" ? (
                       <button
                         type="button"

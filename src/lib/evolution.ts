@@ -128,6 +128,50 @@ export async function notifyAvisosColetas(text: string): Promise<boolean> {
   }
 }
 
+export async function notifyNewOrderToAvisos(params: {
+  companyName: string | null;
+  requesterName: string;
+  phone: string | null;
+  items: Array<{
+    actionType: string;
+    containerType: string;
+    quantity: number;
+  }>;
+  rawMessage: string;
+}): Promise<boolean> {
+  const companyLabel = params.companyName?.trim() || "Não identificada";
+  const contactLabel =
+    params.requesterName && params.requesterName !== "Solicitante WhatsApp"
+      ? `${params.requesterName}${params.phone ? ` (${params.phone})` : ""}`
+      : params.phone || "Sem identificação";
+
+  const itemsText = params.items
+    .map((item) => {
+      const actionLabel = item.actionType === "TROCA" ? "Troca" : "Coleta";
+      const containerLabel =
+        item.containerType === "TAMBOR"
+          ? item.quantity === 1
+            ? "tambor"
+            : "tambores"
+          : item.quantity === 1
+            ? "caixa/caçamba"
+            : "caixas/caçambas";
+      return `• ${item.quantity}x ${containerLabel} (${actionLabel})`;
+    })
+    .join("\n");
+
+  const message = [
+    "📥 Novo pedido recebido pelo WhatsApp (aguardando revisão no painel):",
+    `Empresa: ${companyLabel}`,
+    `Contato: ${contactLabel}`,
+    "Itens:",
+    itemsText,
+    `Mensagem: "${params.rawMessage}"`,
+  ].join("\n");
+
+  return notifyAvisosColetas(message);
+}
+
 export async function notifyOrderCompletedToAvisos(order: {
   company?: { name: string } | null;
   requesterName: string;

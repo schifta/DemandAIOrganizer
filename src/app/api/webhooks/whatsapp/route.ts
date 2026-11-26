@@ -10,7 +10,10 @@ import {
 } from "@/lib/nlp-extractor";
 import { emitNewOrder } from "@/lib/order-events";
 import { filterAiUpdatePayload } from "@/lib/ai-guard";
-import { notifyAvisosColetas } from "@/lib/evolution";
+import {
+  notifyAvisosColetas,
+  notifyNewOrderToAvisos,
+} from "@/lib/evolution";
 
 function normalizeForMatch(value: string): string {
   return value
@@ -512,7 +515,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         rawMessage: messageText,
         status: "PENDENTE",
         priorityOrder: nextPriority + i,
-        needsReview,
+        needsReview: true,
         manuallyEdited: false,
         lockedFields: "[]",
       },
@@ -524,9 +527,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     createdOrders.push(order);
   }
 
-  if (companyId === null || extracted.needsClarification) {
+  await notifyNewOrderToAvisos({
+    companyName: createdOrders[0]?.company?.name ?? null,
+    requesterName: extracted.requesterName,
+    phone: parsed.phone || null,
+    items: extracted.items,
+    rawMessage: messageText,
+  });
+
+  if (extracted.needsClarification) {
     await notifyAvisosColetas(
-      `⚠️ Pedido sem empresa identificada / precisa revisão (${parsed.senderName || extracted.requesterName} — ${parsed.phone || "sem número"}):\n"${messageText}"`
+      `⚠️ Pedido precisa revisão (${parsed.senderName || extracted.requesterName} — ${parsed.phone || "sem número"}):\n"${messageText}"`
     );
   }
 

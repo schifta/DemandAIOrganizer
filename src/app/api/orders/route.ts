@@ -12,8 +12,13 @@ export async function GET() {
 
     await cleanupExpiredRecords();
 
+    const isAdmin =
+      auth.user.role === "ADMIN_MASTER" || auth.user.role === "ADMIN";
+
     const orders = await prisma.order.findMany({
-      where: { deletedAt: null },
+      where: isAdmin
+        ? { deletedAt: null }
+        : { deletedAt: null, needsReview: false },
       orderBy: [{ priorityOrder: "asc" }, { createdAt: "asc" }],
       include: {
         company: {

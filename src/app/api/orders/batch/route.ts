@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
-import { notifyOrderCompletedToAvisos } from "@/lib/evolution";
 
 function parseLockedFields(raw: string): string[] {
   try {
@@ -68,7 +67,7 @@ export async function POST(request: Request) {
     const uniqueIds = Array.from(new Set(orderIds.map((id) => id.trim())));
     const now = new Date();
 
-    const { count, newlyCompletedIds } = await prisma.$transaction(async (tx) => {
+    const { count } = await prisma.$transaction(async (tx) => {
       const orders = await tx.order.findMany({
         where: {
           id: { in: uniqueIds },
@@ -188,26 +187,8 @@ export async function POST(request: Request) {
         await tx.orderEvent.createMany({ data: events });
       }
 
-      return { count: orders.length, newlyCompletedIds: completedIds };
+      return { count: orders.length };
     });
-
-    if (action === "COMPLETE" && newlyCompletedIds.length > 0) {
-      try {
-        const completedOrders = await prisma.order.findMany({
-          where: { id: { in: newlyCompletedIds } },
-          include: {
-            company: {
-              select: { name: true },
-            },
-          },
-        });
-        for (const completedOrder of completedOrders) {
-          await notifyOrderCompletedToAvisos(completedOrder).catch(() => {});
-        }
-      } catch {
-        // Ignore notification errors so batch completion still succeeds
-      }
-    }
 
     return NextResponse.json({ ok: true, count });
   } catch (error) {

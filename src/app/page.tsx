@@ -192,6 +192,9 @@ export default function DashboardPage() {
 
   const handleIncomingOrder = useCallback(
     (newOrder: OrderItem) => {
+      if (!isAdmin && newOrder.needsReview) {
+        return;
+      }
       if (knownOrderIdsRef.current.has(newOrder.id)) {
         return;
       }
@@ -593,18 +596,20 @@ export default function DashboardPage() {
       const schedYmd = getOrderScheduledYmd(o.scheduledDate);
       switch (filter) {
         case "PENDENTE":
-          return o.status === "PENDENTE";
+          return o.status === "PENDENTE" && !o.needsReview;
         case "HOJE":
-          return schedYmd === todayStr && o.status !== "CANCELADO";
+          return schedYmd === todayStr && o.status !== "CANCELADO" && !o.needsReview;
         case "ATRASADOS":
           return (
             o.status === "PENDENTE" &&
+            !o.needsReview &&
             Boolean(schedYmd) &&
             schedYmd < todayStr
           );
         case "AGENDADAS":
           return (
             o.scheduledDate !== null &&
+            !o.needsReview &&
             o.status !== "CONCLUIDO" &&
             o.status !== "CANCELADO"
           );
@@ -818,12 +823,13 @@ export default function DashboardPage() {
 
     return {
       total: orders.length,
-      pending: orders.filter((o) => o.status === "PENDENTE").length,
+      pending: orders.filter((o) => o.status === "PENDENTE" && !o.needsReview).length,
       today,
       overdue,
       scheduled: orders.filter(
         (o) =>
           o.scheduledDate !== null &&
+          !o.needsReview &&
           o.status !== "CONCLUIDO" &&
           o.status !== "CANCELADO"
       ).length,
