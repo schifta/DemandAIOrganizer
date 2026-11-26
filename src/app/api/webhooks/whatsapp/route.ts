@@ -4,31 +4,13 @@ import { parseWhatsAppPayload, normalizePhone } from "@/lib/whatsapp-parser";
 import {
   extractOrderWithNLP,
   extractOrderFromAudioWithGemini,
+  matchCompanyByNameFuzzy,
   matchCompanyWithGemini,
   ExtractedOrderData,
 } from "@/lib/nlp-extractor";
 import { emitNewOrder } from "@/lib/order-events";
 import { filterAiUpdatePayload } from "@/lib/ai-guard";
-
-type PendingCompanyEntry = {
-  orderIds: string[];
-  phone: string;
-  remoteJid?: string;
-  senderName: string;
-  rawMessage: string;
-  createdAt: number;
-};
-
-const PENDING_COMPANY_TTL_MS = 30 * 60 * 1000;
-
-const globalForPendingCompany = globalThis as unknown as {
-  __schifterPendingCompany?: Map<string, PendingCompanyEntry>;
-};
-
-const pendingCompanyMap =
-  globalForPendingCompany.__schifterPendingCompany ??
-  new Map<string, PendingCompanyEntry>();
-globalForPendingCompany.__schifterPendingCompany = pendingCompanyMap;
+import { notifyAvisosColetas } from "@/lib/evolution";
 
 function normalizeForMatch(value: string): string {
   return value
@@ -36,62 +18,6 @@ function normalizeForMatch(value: string): string {
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .trim();
-}
-
-function getBrasiliaGreeting(): "Bom dia" | "Boa tarde" | "Boa noite" {
-  const hourStr = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Sao_Paulo",
-    hour: "numeric",
-    hour12: false,
-  }).format(new Date());
-  const hour = Number.parseInt(hourStr, 10) % 24;
-  if (hour >= 5 && hour <= 11) return "Bom dia";
-  if (hour >= 12 && hour <= 17) return "Boa tarde";
-  return "Boa noite";
-}
-
-async function sendEvolutionText(
-  target: string,
-  text: string
-): Promise<boolean> {
-  const baseUrl = process.env.EVOLUTION_API_URL?.trim().replace(/\/+$/, "");
-  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
-  const instance = process.env.EVOLUTION_INSTANCE?.trim();
-  const trimmedTarget = target.trim();
-
-  if (!baseUrl || !apiKey || !instance || !trimmedTarget) {
-    return false;
-  }
-
-  try {
-    const endpoint = `${baseUrl}/message/sendText/${encodeURIComponent(
-      instance
-    )}`;
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: apiKey,
-      },
-      signal: AbortSignal.timeout(8000),
-      body: JSON.stringify({
-        number: trimmedTarget,
-        text,
-      }),
-    });
-
-    if (!response.ok) {
-      console.error(
-        `Evolution API sendText failed with status ${response.status}`
-      );
-      return false;
-    }
-
-    return true;
-  } catch (error) {
-    console.error("Evolution API sendText error:", error);
-    return false;
-  }
 }
 
 async function fetchEvolutionAudioBase64(
@@ -148,71 +74,6 @@ async function fetchEvolutionAudioBase64(
   }
 }
 
-async function findOfficeGroupJid(): Promise<string | null> {
-  const configuredJid = process.env.EVOLUTION_OFFICE_GROUP_JID?.trim();
-  if (configuredJid) {
-    return configuredJid;
-  }
-
-  const baseUrl = process.env.EVOLUTION_API_URL?.trim().replace(/\/+$/, "");
-  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
-  const instance = process.env.EVOLUTION_INSTANCE?.trim();
-
-  if (!baseUrl || !apiKey || !instance) {
-    return null;
-  }
-
-  try {
-    const endpoint = `${baseUrl}/group/fetchAllGroups/${encodeURIComponent(
-      instance
-    )}?getParticipants=false`;
-    const response = await fetch(endpoint, {
-      method: "GET",
-      headers: {
-        apikey: apiKey,
-      },
-      signal: AbortSignal.timeout(8000),
-    });
-
-    if (!response.ok) {
-      console.error(
-        `Evolution API fetchAllGroups failed with status ${response.status}`
-      );
-      return null;
-    }
-
-    const json: unknown = await response.json();
-    const groups: unknown[] = Array.isArray(json)
-      ? json
-      : typeof json === "object" &&
-          json !== null &&
-          Array.isArray((json as { data?: unknown }).data)
-        ? ((json as { data: unknown[] }).data)
-        : [];
-
-    for (const item of groups) {
-      if (typeof item !== "object" || item === null) continue;
-      const group = item as { id?: unknown; jid?: unknown; subject?: unknown };
-      if (
-        typeof group.subject === "string" &&
-        normalizeForMatch(group.subject).includes("escritorio")
-      ) {
-        if (typeof group.id === "string" && group.id.trim()) {
-          return group.id.trim();
-        }
-        if (typeof group.jid === "string" && group.jid.trim()) {
-          return group.jid.trim();
-        }
-      }
-    }
-
-    return null;
-  } catch (error) {
-    console.error("Evolution API fetchAllGroups error:", error);
-    return null;
-  }
-}
-
 function tokenizeForScore(value: string): Set<string> {
   const tokens = normalizeForMatch(value)
     .split(/[^a-z0-9]+/)
@@ -222,11 +83,12 @@ function tokenizeForScore(value: string): Set<string> {
 
 async function resolveCompanyFromMessage(params: {
   phone: string;
+  pushName?: string;
   requesterName: string;
   companyHint: string | null;
   rawText: string;
 }): Promise<{ companyId: string | null; companyFallbackNote: string | null }> {
-  const { phone, requesterName, companyHint, rawText } = params;
+  const { phone, pushName, requesterName, companyHint, rawText } = params;
 
   // 1. Primary lookup: exact or trailing 8-9 digits phone match
   if (phone.length > 0) {
@@ -305,28 +167,21 @@ async function resolveCompanyFromMessage(params: {
     }
   }
 
-  if (companyHint) {
-    const normalizedHint = normalizeForMatch(companyHint);
-    if (normalizedHint.length >= 2) {
-      const companies = await prisma.company.findMany();
-      const matchedCompany = companies.find((co) => {
-        const companyName = normalizeForMatch(co.name);
-        const companyNickname = co.nickname
-          ? normalizeForMatch(co.nickname)
-          : "";
-        const nameMatches =
-          companyName.length >= 2 &&
-          (companyName.includes(normalizedHint) ||
-            normalizedHint.includes(companyName));
-        const nicknameMatches =
-          companyNickname.length >= 2 &&
-          (companyNickname.includes(normalizedHint) ||
-            normalizedHint.includes(companyNickname));
-        return nameMatches || nicknameMatches;
-      });
-      if (matchedCompany) {
-        return { companyId: matchedCompany.id, companyFallbackNote: null };
-      }
+  const allCompanies = await prisma.company.findMany({
+    select: { id: true, name: true, nickname: true },
+  });
+
+  // Fuzzy match on pushName, requesterName, and companyHint (stripping department prefixes)
+  const fuzzyQueries = [
+    companyHint ?? "",
+    pushName ?? "",
+    requesterName !== "Solicitante WhatsApp" ? requesterName : "",
+  ].filter((q) => q.trim().length >= 2);
+
+  for (const query of fuzzyQueries) {
+    const fuzzyMatchedId = matchCompanyByNameFuzzy(query, allCompanies);
+    if (fuzzyMatchedId) {
+      return { companyId: fuzzyMatchedId, companyFallbackNote: null };
     }
   }
 
@@ -343,6 +198,7 @@ async function resolveCompanyFromMessage(params: {
     if (companiesWithContacts.length > 0) {
       const queryTokens = tokenizeForScore(
         [
+          pushName ?? "",
           requesterName !== "Solicitante WhatsApp" ? requesterName : "",
           companyHint ?? "",
           rawText,
@@ -387,6 +243,7 @@ async function resolveCompanyFromMessage(params: {
       const geminiMatchedId = await matchCompanyWithGemini({
         text: rawText,
         requesterName,
+        pushName,
         companyHint,
         candidates: scoredCandidates,
       });
@@ -511,73 +368,19 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     messageText = audioExtracted.transcript || "[Áudio WhatsApp]";
   }
 
-  if (parsed.phone) {
-    const pending = pendingCompanyMap.get(parsed.phone);
-    if (pending) {
-      if (Date.now() - pending.createdAt < PENDING_COMPANY_TTL_MS) {
-        pendingCompanyMap.delete(parsed.phone);
-
-        const { companyId: followUpCompanyId } = await resolveCompanyFromMessage(
-          {
-            phone: parsed.phone,
-            requesterName: parsed.senderName,
-            companyHint: messageText,
-            rawText: messageText,
-          }
-        );
-
-        if (followUpCompanyId) {
-          await prisma.order.updateMany({
-            where: { id: { in: pending.orderIds } },
-            data: {
-              companyId: followUpCompanyId,
-              needsReview: false,
-              companyFallbackNote: null,
-            },
-          });
-
-          await sendEvolutionText(
-            parsed.remoteJid || parsed.phone,
-            `${getBrasiliaGreeting()}, perfeito! Sua coleta foi agendada.`
-          );
-
-          return NextResponse.json(
-            {
-              ok: true,
-              companyResolvedOnFollowUp: true,
-              companyId: followUpCompanyId,
-            },
-            { status: 200 }
-          );
-        }
-
-        const officeGroupJid = await findOfficeGroupJid();
-        if (officeGroupJid) {
-          await sendEvolutionText(
-            officeGroupJid,
-            `⚠️ Atenção Escritório: O contato ${pending.senderName || parsed.phone} (${parsed.phone}) solicitou uma coleta ("${pending.rawMessage}"), pedimos o nome da empresa e ele respondeu "${messageText}", mas não foi possível identificar automaticamente. Verificar no painel.`
-          );
-        }
-
-        return NextResponse.json(
-          { ok: true, escalatedToOffice: true },
-          { status: 200 }
-        );
-      } else {
-        pendingCompanyMap.delete(parsed.phone);
-      }
-    }
-  }
-
   const extracted: ExtractedOrderData =
     audioExtracted ?? (await extractOrderWithNLP(messageText, parsed.senderName));
 
   if (!extracted.isOrderRequest) {
+    if (extracted.needsClarification) {
+      await notifyAvisosColetas(
+        `⚠️ Mensagem para revisão (${parsed.senderName || parsed.phone || "Desconhecido"} — ${parsed.phone || "sem número"}):\n"${messageText}"`
+      );
+    }
     return NextResponse.json(
       {
         ignored: true,
-        isOrderRequest: false,
-        reason: "Mensagem comum ignorada (não é pedido de coleta/troca)",
+        escalatedToAvisos: Boolean(extracted.needsClarification),
       },
       { status: 200 }
     );
@@ -585,12 +388,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const { companyId, companyFallbackNote } = await resolveCompanyFromMessage({
     phone: parsed.phone,
+    pushName: parsed.senderName,
     requesterName: extracted.requesterName,
     companyHint: extracted.companyHint,
     rawText: messageText,
   });
 
-  const needsReview = companyId === null;
+  const needsReview = companyId === null || Boolean(extracted.needsClarification);
 
   const orderId =
     typeof body === "object" &&
@@ -720,31 +524,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     createdOrders.push(order);
   }
 
-  const greeting = getBrasiliaGreeting();
-  const replyTarget = parsed.remoteJid || parsed.phone;
-  let autoReplySent = false;
-
-  if (companyId === null) {
-    if (parsed.phone) {
-      pendingCompanyMap.set(parsed.phone, {
-        orderIds: createdOrders.map((o) => o.id),
-        phone: parsed.phone,
-        remoteJid: parsed.remoteJid,
-        senderName: extracted.requesterName,
-        rawMessage: messageText,
-        createdAt: Date.now(),
-      });
-    }
-    autoReplySent = await sendEvolutionText(
-      replyTarget,
-      `${greeting}! Para agendar sua coleta, poderia informar o nome da sua empresa?`
+  if (companyId === null || extracted.needsClarification) {
+    await notifyAvisosColetas(
+      `⚠️ Pedido sem empresa identificada / precisa revisão (${parsed.senderName || extracted.requesterName} — ${parsed.phone || "sem número"}):\n"${messageText}"`
     );
-  } else {
-    const confirmationText =
-      createdOrders.length > 1
-        ? `${greeting}, suas coletas foram agendadas!`
-        : `${greeting}, agendado!`;
-    autoReplySent = await sendEvolutionText(replyTarget, confirmationText);
   }
 
   return NextResponse.json(
@@ -753,7 +536,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       extracted,
       order: createdOrders[0],
       orders: createdOrders,
-      autoReplySent,
     },
     { status: 201 }
   );

@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin, requireAuth } from "@/lib/auth";
+import { notifyOrderCompletedToAvisos } from "@/lib/evolution";
 
 const VALID_STATUSES = ["PENDENTE", "CONCLUIDO", "CANCELADO"] as const;
 const VALID_ACTION_TYPES = ["TROCA", "COLETA"] as const;
@@ -492,6 +493,10 @@ export async function PATCH(request: Request, context: RouteContext) {
 
       return updated;
     });
+
+    if (status === "CONCLUIDO" && existingOrder.status !== "CONCLUIDO") {
+      await notifyOrderCompletedToAvisos(order).catch(() => {});
+    }
 
     return NextResponse.json({ order });
   } catch (error) {

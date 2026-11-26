@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/auth";
+import { notifyOrderCompletedToAvisos } from "@/lib/evolution";
 
 function parseLockedFields(raw: string): string[] {
   try {
@@ -67,7 +68,7 @@ export async function POST(request: Request) {
     const uniqueIds = Array.from(new Set(orderIds.map((id) => id.trim())));
     const now = new Date();
 
-    const count = await prisma.$transaction(async (tx) => {
+    const { count, newlyCompletedIds } = await prisma.$transaction(async (tx) => {
       const orders = await tx.order.findMany({
         where: {
           id: { in: uniqueIds },
@@ -84,7 +85,7 @@ export async function POST(request: Request) {
       });
 
       if (orders.length === 0) {
-        return 0;
+        return { count: 0, newlyCompletedIds: [] as string[] };
       }
 
       const events: Array<{
@@ -95,6 +96,7 @@ export async function POST(request: Request) {
         beforeValue: string | null;
         afterValue: string | null;
       }> = [];
+      const completedIds: string[] = [];
 
       for (const order of orders) {
         const existingLocked = parseLockedFields(order.lockedFields);
@@ -125,6 +127,7 @@ export async function POST(request: Request) {
           });
 
           if (order.status !== "CONCLUIDO") {
+            completedIds.push(order.id);
             events.push({
               orderId: order.id,
               actorId: auth.user.userId,
@@ -185,8 +188,26 @@ export async function POST(request: Request) {
         await tx.orderEvent.createMany({ data: events });
       }
 
-      return orders.length;
+      return { count: orders.length, newlyCompletedIds: completedIds };
     });
+
+    if (action === "COMPLETE" && newlyCompletedIds.length > 0) {
+      try {
+        const completedOrders = await prisma.order.findMany({
+          where: { id: { in: newlyCompletedIds } },
+          include: {
+            company: {
+              select: { name: true },
+            },
+          },
+        });
+        for (const completedOrder of completedOrders) {
+          await notifyOrderCompletedToAvisos(completedOrder).catch(() => {});
+        }
+      } catch {
+        // Ignore notification errors so batch completion still succeeds
+      }
+    }
 
     return NextResponse.json({ ok: true, count });
   } catch (error) {

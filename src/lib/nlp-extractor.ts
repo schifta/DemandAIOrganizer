@@ -9,6 +9,7 @@ export type ExtractedOrderItem = {
 
 export type ExtractedOrderData = {
   isOrderRequest: boolean;
+  needsClarification?: boolean;
   requesterName: string;
   companyHint: string | null;
   actionType: OrderActionType;
@@ -101,6 +102,195 @@ const NON_COMPANY_HINTS = new Set([
 
 function stripAccents(value: string): string {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+const DEPARTMENT_PREFIX_TOKENS = new Set([
+  "rh",
+  "compras",
+  "financeiro",
+  "comercial",
+  "logistica",
+  "atendimento",
+  "recepcao",
+  "adm",
+  "administrativo",
+  "dep",
+  "depto",
+  "departamento",
+  "setor",
+  "gerencia",
+  "diretoria",
+  "portaria",
+  "expedicao",
+  "almoxarifado",
+  "contato",
+]);
+
+const CORPORATE_SUFFIX_TOKENS = new Set([
+  "ltda",
+  "sa",
+  "s/a",
+  "industria",
+  "comercio",
+  "eireli",
+  "me",
+  "epp",
+]);
+
+const CONNECTOR_TOKENS = new Set(["de", "da", "do", "das", "dos"]);
+
+/**
+ * Normalizes accents/lowercase and removes common department/role prefixes
+ * from the start (or standalone tokens) such as "RH", "Compras", "Falar com".
+ */
+export function stripDepartmentPrefixes(value: string): string {
+  let normalized = stripAccents(value)
+    .toLowerCase()
+    .replace(/\bfalar\s+com\b/g, " ")
+    .replace(/[|:/\\()[\]{}"'`~*]+/g, " ")
+    .replace(/\s*[-–—]+\s*/g, " ")
+    .replace(/[.,;!?]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return "";
+
+  const tokens = normalized.split(" ").filter(Boolean);
+  // Strip leading department prefixes and connectors
+  while (
+    tokens.length > 0 &&
+    (DEPARTMENT_PREFIX_TOKENS.has(tokens[0]) ||
+      CONNECTOR_TOKENS.has(tokens[0]))
+  ) {
+    tokens.shift();
+  }
+
+  // Also remove standalone department tokens anywhere if other tokens remain
+  const filtered = tokens.filter((t) => !DEPARTMENT_PREFIX_TOKENS.has(t));
+  const resultTokens = filtered.length > 0 ? filtered : tokens;
+
+  // Strip leading connectors again if exposed after removing standalone tokens
+  while (resultTokens.length > 0 && CONNECTOR_TOKENS.has(resultTokens[0])) {
+    resultTokens.shift();
+  }
+
+  normalized = resultTokens.join(" ").trim();
+  return normalized;
+}
+
+function normalizeCompanyForComparison(value: string): string {
+  const normalized = stripAccents(value)
+    .toLowerCase()
+    .replace(/\bs\s*\/\s*a\b/g, " sa ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized) return "";
+
+  const tokens = normalized
+    .split(" ")
+    .filter((t) => t.length > 0 && !CORPORATE_SUFFIX_TOKENS.has(t));
+
+  return (tokens.length > 0 ? tokens : normalized.split(" ")).join(" ").trim();
+}
+
+function tokenizeFuzzy(value: string): string[] {
+  return value
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && !CONNECTOR_TOKENS.has(t));
+}
+
+/**
+ * Matches a query (such as pushName, requesterName, or companyHint) against
+ * registered companies using department prefix stripping, corporate suffix
+ * normalization, exact, substring, and token-overlap fuzzy matching.
+ */
+export function matchCompanyByNameFuzzy(
+  query: string,
+  companies: Array<{ id: string; name: string; nickname?: string | null }>
+): string | null {
+  const cleanQuery = stripDepartmentPrefixes(query);
+  if (cleanQuery.length < 2) {
+    return null;
+  }
+
+  const queryNoCorp = normalizeCompanyForComparison(cleanQuery) || cleanQuery;
+  const queryTokens = tokenizeFuzzy(queryNoCorp);
+
+  let bestId: string | null = null;
+  let bestScore = 0;
+
+  for (const company of companies) {
+    const candidates = [company.name, company.nickname ?? ""].filter(
+      (v) => v.trim().length > 0
+    );
+
+    for (const candidateRaw of candidates) {
+      const candidateNorm = normalizeCompanyForComparison(candidateRaw);
+      const candidateRawNorm = stripAccents(candidateRaw)
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      for (const target of [candidateNorm, candidateRawNorm]) {
+        if (target.length < 2) continue;
+
+        // 1. Exact match
+        if (queryNoCorp === target || cleanQuery === target) {
+          return company.id;
+        }
+
+        // 2. Substring match
+        if (
+          queryNoCorp.length >= 3 &&
+          target.length >= 3 &&
+          (target.includes(queryNoCorp) || queryNoCorp.includes(target))
+        ) {
+          const lengthRatio =
+            Math.min(queryNoCorp.length, target.length) /
+            Math.max(queryNoCorp.length, target.length);
+          const score = 80 + lengthRatio * 15;
+          if (score > bestScore) {
+            bestScore = score;
+            bestId = company.id;
+          }
+          continue;
+        }
+
+        // 3. Token-overlap fuzzy match
+        const targetTokens = tokenizeFuzzy(target);
+        if (queryTokens.length === 0 || targetTokens.length === 0) continue;
+
+        const targetSet = new Set(targetTokens);
+        let sharedCount = 0;
+        let maxSharedTokenLen = 0;
+
+        for (const qt of queryTokens) {
+          if (targetSet.has(qt)) {
+            sharedCount += 1;
+            if (qt.length > maxSharedTokenLen) maxSharedTokenLen = qt.length;
+          }
+        }
+
+        if (sharedCount > 0 && maxSharedTokenLen >= 3) {
+          const queryOverlap = sharedCount / queryTokens.length;
+          const targetOverlap = sharedCount / targetTokens.length;
+          if (queryOverlap >= 0.5 || targetOverlap >= 0.5) {
+            const score = 40 + (queryOverlap + targetOverlap) * 15 + sharedCount * 2;
+            if (score > bestScore) {
+              bestScore = score;
+              bestId = company.id;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return bestId;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -369,6 +559,7 @@ export function fallbackExtractOrder(
 
   return {
     isOrderRequest,
+    needsClarification: !isOrderRequest && !isGreetingOrChitchat(asciiText),
     requesterName,
     companyHint,
     actionType,
@@ -456,11 +647,20 @@ function sanitizeExtractedData(
   }
 
   const asciiOriginal = stripAccents(originalText).toLowerCase();
-  const isOrderRequest = isGreetingOrChitchat(asciiOriginal)
+  const isGreeting = isGreetingOrChitchat(asciiOriginal);
+  const isOrderRequest = isGreeting
     ? false
     : typeof raw.isOrderRequest === "boolean"
       ? raw.isOrderRequest
       : fallback.isOrderRequest;
+
+  const needsClarification = isGreeting
+    ? false
+    : typeof raw.needsClarification === "boolean"
+      ? raw.needsClarification
+      : isOrderRequest
+        ? false
+        : fallback.needsClarification ?? true;
 
   const sanitizedItems: ExtractedOrderItem[] = [];
   if (Array.isArray(raw.items)) {
@@ -507,6 +707,7 @@ function sanitizeExtractedData(
 
   return {
     isOrderRequest,
+    needsClarification,
     requesterName,
     companyHint,
     actionType: items[0].actionType,
@@ -523,21 +724,29 @@ function buildExtractionPrompt(
   return [
     "Extraia os dados estruturados de um pedido de coleta/troca de resíduos recebido via WhatsApp em português.",
     "Regras obrigatórias:",
-    '- Saudações ou mensagens curtas sem intenção clara de pedido ("Oi", "Olá", "Bom dia", "Ok", "Tudo bem?", "Obrigado") DEVEM retornar "isOrderRequest": false.',
+    '- Saudações ou mensagens curtas sem intenção clara de pedido ("Oi", "Olá", "Bom dia", "Ok", "Tudo bem?", "Obrigado") DEVEM retornar "isOrderRequest": false e "needsClarification": false.',
+    '- Mensagens que NÃO são saudações simples, mas são ambíguas/incompletas ou dúvidas que precisam de atenção da equipe (ex: "Cadê o motorista?", "Preciso de ajuda", "Vocês atendem hoje?") DEVEM retornar "isOrderRequest": false e "needsClarification": true.',
+    '- Para pedidos claros, retorne "needsClarification": false (ou true apenas se faltar informação crítica e precisar revisão da equipe).',
     '- Abreviações comuns de WhatsApp: número seguido de "t", "tb" ou "tbs" (ex: "8t", "4 t") significa "TAMBOR" com aquela quantidade; número seguido de "cx" ou "cxs" (ex: "2cx") significa "CAIXA_CACAMBA" com aquela quantidade.',
     '- Se a mensagem pedir múltiplos tipos de recipientes (ex: "1 cx e 5t", "2 caixas e 3 tambores"), inclua cada um como um item separado no array "items" e mantenha actionType, containerType e quantity iguais ao primeiro item.',
+    '- Ao identificar companyHint a partir da mensagem ou do Nome/Perfil do WhatsApp (pushName), remova prefixos de setor/departamento (ex: RH, Compras, Financeiro, Logística, Portaria, Adm, Depto). Exemplos:',
+    '  * pushName: "RH Samrello" + Mensagem: "Bom dia, preciso de coleta de 2 caixas" -> companyHint: "Samrello", isOrderRequest: true, needsClarification: false',
+    '  * pushName: "Compras Alfa" + Mensagem: "Pode trocar 4 tambores?" -> companyHint: "Alfa", isOrderRequest: true, needsClarification: false',
+    '  * pushName: "João" + Mensagem: "Bom dia!" -> companyHint: null, isOrderRequest: false, needsClarification: false',
+    '  * pushName: "Maria" + Mensagem: "O caminhão já saiu?" -> companyHint: null, isOrderRequest: false, needsClarification: true',
     "Responda EXCLUSIVAMENTE com um objeto JSON válido seguindo exatamente este schema:",
     "{",
     '  "isOrderRequest": boolean (true SOMENTE se for pedido real de coleta, troca, agendamento, retirada ou envio de caixas/caçambas/tambores/resíduos; false para saudações, agradecimentos ou conversas comuns),',
+    '  "needsClarification": boolean (true quando uma mensagem não-saudação é ambígua/incompleta e precisa de atenção da equipe; false para pedidos claros ou saudações simples),',
     '  "requesterName": string (nome do solicitante; se não estiver na mensagem use o nome do remetente informado ou "Solicitante WhatsApp"),',
-    '  "companyHint": string | null (nome da empresa mencionada ou null se não houver),',
+    '  "companyHint": string | null (nome da empresa mencionada ou extraída do pushName sem prefixo de setor, ou null se não houver),',
     '  "actionType": "TROCA" | "COLETA" ("TROCA" se pedir troca/substituição; caso contrário "COLETA"),',
     '  "containerType": "CAIXA_CACAMBA" | "TAMBOR" ("TAMBOR" para tambor/bombona; "CAIXA_CACAMBA" para caixa/caçamba),',
     '  "quantity": number (inteiro >= 1; padrão 1 se não especificado),',
     '  "items": Array<{ "actionType": "TROCA" | "COLETA", "containerType": "CAIXA_CACAMBA" | "TAMBOR", "quantity": number }> (lista com todos os itens do pedido)',
     "}",
     "",
-    `Nome do remetente no WhatsApp (fallback): ${fallbackSenderName?.trim() || "não informado"}`,
+    `Nome/Perfil do WhatsApp (pushName): ${fallbackSenderName?.trim() || "não informado"}`,
     `Mensagem: ${JSON.stringify(text)}`,
   ].join("\n");
 }
@@ -569,6 +778,7 @@ async function callGeminiExtractor(
           type: "OBJECT",
           properties: {
             isOrderRequest: { type: "BOOLEAN" },
+            needsClarification: { type: "BOOLEAN" },
             requesterName: { type: "STRING" },
             companyHint: { type: "STRING", nullable: true },
             actionType: { type: "STRING", enum: ["TROCA", "COLETA"] },
@@ -595,6 +805,7 @@ async function callGeminiExtractor(
           },
           required: [
             "isOrderRequest",
+            "needsClarification",
             "requesterName",
             "companyHint",
             "actionType",
@@ -726,6 +937,7 @@ export type CompanyMatchCandidate = {
 export async function matchCompanyWithGemini(params: {
   text: string;
   requesterName: string;
+  pushName?: string;
   companyHint: string | null;
   candidates: CompanyMatchCandidate[];
 }): Promise<string | null> {
@@ -737,10 +949,12 @@ export async function matchCompanyWithGemini(params: {
 
   const validIds = new Set(topCandidates.map((c) => c.id));
   const prompt = [
-    "Associe a mensagem de WhatsApp a uma das empresas candidatas abaixo, se houver correspondência clara pelo nome da empresa, apelido/sigla ou nome do contato.",
+    "Associe a mensagem de WhatsApp a uma das empresas candidatas abaixo, se houver correspondência clara pelo nome da empresa, apelido/sigla, nome do contato ou Nome/Perfil do WhatsApp (pushName).",
+    'Ignore prefixos de departamento/setor no pushName ou na dica (ex: "RH Samrello" -> "Samrello", "Compras Alfa" -> "Alfa").',
     "Se não houver correspondência clara, retorne null em matchedCompanyId.",
     'Responda EXCLUSIVAMENTE com JSON válido: { "matchedCompanyId": string | null }',
     "",
+    `Nome/Perfil do WhatsApp (pushName): ${JSON.stringify(params.pushName ?? null)}`,
     `Solicitante: ${JSON.stringify(params.requesterName)}`,
     `Dica de empresa: ${JSON.stringify(params.companyHint)}`,
     `Mensagem: ${JSON.stringify(params.text)}`,
@@ -824,10 +1038,13 @@ export async function extractOrderFromAudioWithGemini(params: {
     "1. Transcreva fielmente o áudio no campo \"transcript\".",
     "2. Analise se é um pedido real de coleta, troca, agendamento, retirada ou envio de caixas/caçambas/tambores/resíduos.",
     "Regras obrigatórias:",
-    '- Saudações ou mensagens curtas sem intenção clara de pedido ("Oi", "Olá", "Bom dia", "Ok", "Tudo bem?", "Obrigado") DEVEM retornar "isOrderRequest": false.',
+    '- Saudações ou mensagens curtas sem intenção clara de pedido ("Oi", "Olá", "Bom dia", "Ok", "Tudo bem?", "Obrigado") DEVEM retornar "isOrderRequest": false e "needsClarification": false.',
+    '- Mensagens não-saudação que forem ambíguas/incompletas ou dúvidas para a equipe DEVEM retornar "isOrderRequest": false e "needsClarification": true.',
+    '- Para pedidos claros, retorne "needsClarification": false.',
     '- Abreviações faladas ou equivalentes: tambor/bombona => "TAMBOR", caixa/caçamba => "CAIXA_CACAMBA".',
     '- Se o áudio pedir múltiplos tipos de recipientes (ex: "1 caixa e 5 tambores"), inclua cada um como item separado no array "items" e mantenha actionType, containerType e quantity iguais ao primeiro item.',
-    `Nome do remetente no WhatsApp (fallback): ${params.fallbackSenderName?.trim() || "não informado"}`,
+    '- Ao identificar companyHint a partir do áudio ou do Nome/Perfil do WhatsApp (pushName), remova prefixos de setor (ex: "RH Samrello" -> "Samrello", "Compras Alfa" -> "Alfa").',
+    `Nome/Perfil do WhatsApp (pushName): ${params.fallbackSenderName?.trim() || "não informado"}`,
     "Responda EXCLUSIVAMENTE em JSON válido.",
   ].join("\n");
 
@@ -863,6 +1080,7 @@ export async function extractOrderFromAudioWithGemini(params: {
             properties: {
               transcript: { type: "STRING" },
               isOrderRequest: { type: "BOOLEAN" },
+              needsClarification: { type: "BOOLEAN" },
               requesterName: { type: "STRING" },
               companyHint: { type: "STRING", nullable: true },
               actionType: { type: "STRING", enum: ["TROCA", "COLETA"] },
@@ -890,6 +1108,7 @@ export async function extractOrderFromAudioWithGemini(params: {
             required: [
               "transcript",
               "isOrderRequest",
+              "needsClarification",
               "requesterName",
               "companyHint",
               "actionType",

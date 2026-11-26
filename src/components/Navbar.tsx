@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   ClipboardCopy,
   Download,
+  LogOut,
   Moon,
   RotateCcw,
   Settings,
@@ -15,6 +17,7 @@ import {
 import { AuthUser } from "@/types";
 import { FONT_SCALES, usePreferences } from "@/components/ThemeProvider";
 import { InstallAppButton } from "@/components/InstallAppButton";
+import { clearSession } from "@/lib/client-auth";
 
 interface NavbarProps {
   user: AuthUser;
@@ -39,6 +42,7 @@ export function Navbar({
   onCopyDailyRoute,
   onExportCsv,
 }: NavbarProps) {
+  const router = useRouter();
   const {
     theme,
     toggleTheme,
@@ -52,6 +56,16 @@ export function Navbar({
 
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  async function handleLogout() {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } finally {
+      clearSession();
+      setMenuOpen(false);
+      router.push("/login");
+    }
+  }
 
   const isMinFont = fontScale === FONT_SCALES[0];
   const isMaxFont = fontScale === FONT_SCALES[FONT_SCALES.length - 1];
@@ -301,6 +315,19 @@ export function Navbar({
                   {/* Install App Button */}
                   <div className="border-t border-[var(--color-border)] pt-3">
                     <InstallAppButton />
+                  </div>
+
+                  {/* Logout Button */}
+                  <div className="border-t border-[var(--color-border)] pt-3">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => void handleLogout()}
+                      className="flex w-full items-center gap-2 rounded-xl border border-red-200 bg-red-50/70 px-3 py-2 text-xs font-semibold text-[#B91C1C] hover:bg-red-100 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300 dark:hover:bg-red-950/70"
+                    >
+                      <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>Sair da conta</span>
+                    </button>
                   </div>
                 </div>
               </div>

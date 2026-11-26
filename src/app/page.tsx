@@ -22,8 +22,7 @@ import {
 } from "lucide-react";
 import { Navbar } from "@/components/Navbar";
 import { OrderQueue, OrderUpdatePayload } from "@/components/OrderQueue";
-import { RegistrationRequestsPanel } from "@/components/RegistrationRequestsPanel";
-import { UserManagementPanel } from "@/components/UserManagementPanel";
+import { TeamHoverDrawer } from "@/components/TeamHoverDrawer";
 import {
   NotificationToast,
   ToastItem,
@@ -832,21 +831,6 @@ export default function DashboardPage() {
     };
   }, [orders, todayStr]);
 
-  const filterPills = useMemo(() => {
-    const base: { id: FilterOption; label: string; badge?: number }[] = [
-      { id: "PENDENTE", label: "Pendentes", badge: stats.pending },
-      { id: "HOJE", label: "Hoje", badge: stats.today },
-      { id: "ATRASADOS", label: "Atrasados", badge: stats.overdue },
-      { id: "AGENDADAS", label: "Agendadas" },
-      { id: "CONCLUIDO", label: "Concluídas (5 dias)" },
-      { id: "TODOS", label: "Todas" },
-    ];
-    if (isAdmin) {
-      base.push({ id: "REVISAO", label: "Revisão" });
-    }
-    return base;
-  }, [isAdmin, stats.pending, stats.today, stats.overdue]);
-
   if (loading || !user) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-[var(--color-bg-main)]">
@@ -887,14 +871,23 @@ export default function DashboardPage() {
           </div>
         )}
 
-        {/* Summary Cards (Desktop only so mobile goes straight to orders) */}
+        {/* Summary Cards as Single Clickable Filters (Desktop only so mobile goes straight to orders) */}
         <section
           aria-label="Resumo operacional"
           className={`mb-6 hidden gap-3 sm:gap-4 md:grid ${
             isAdmin ? "md:grid-cols-4" : "md:grid-cols-3"
           }`}
         >
-          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
+          <button
+            type="button"
+            onClick={() => handleSelectFilter("PENDENTE")}
+            aria-pressed={filter === "PENDENTE"}
+            className={`rounded-2xl border bg-[var(--color-surface-card)] p-4 text-left shadow-xs transition-all hover:border-slate-300 dark:hover:border-slate-600 ${
+              filter === "PENDENTE"
+                ? "border-[var(--color-primary)] ring-2 ring-[var(--color-primary)]"
+                : "border-[var(--color-border)]"
+            }`}
+          >
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wide text-[#B91C1C] dark:text-red-400">
                 Pendentes
@@ -904,9 +897,18 @@ export default function DashboardPage() {
             <p className="mt-2 text-2xl font-bold text-[var(--color-text-main)]">
               {stats.pending}
             </p>
-          </div>
+          </button>
 
-          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
+          <button
+            type="button"
+            onClick={() => handleSelectFilter("AGENDADAS")}
+            aria-pressed={filter === "AGENDADAS"}
+            className={`rounded-2xl border bg-[var(--color-surface-card)] p-4 text-left shadow-xs transition-all hover:border-slate-300 dark:hover:border-slate-600 ${
+              filter === "AGENDADAS"
+                ? "border-[var(--color-primary)] ring-2 ring-[var(--color-primary)]"
+                : "border-[var(--color-border)]"
+            }`}
+          >
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
                 Agendadas
@@ -919,9 +921,18 @@ export default function DashboardPage() {
             <p className="mt-2 text-2xl font-bold text-[var(--color-text-main)]">
               {stats.scheduled}
             </p>
-          </div>
+          </button>
 
-          <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
+          <button
+            type="button"
+            onClick={() => handleSelectFilter("ATRASADOS")}
+            aria-pressed={filter === "ATRASADOS"}
+            className={`rounded-2xl border bg-[var(--color-surface-card)] p-4 text-left shadow-xs transition-all hover:border-slate-300 dark:hover:border-slate-600 ${
+              filter === "ATRASADOS"
+                ? "border-[var(--color-primary)] ring-2 ring-[var(--color-primary)]"
+                : "border-[var(--color-border)]"
+            }`}
+          >
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wide text-red-600 dark:text-red-400">
                 Atrasados
@@ -940,10 +951,19 @@ export default function DashboardPage() {
                 {stats.total} total
               </span>
             </div>
-          </div>
+          </button>
 
           {isAdmin && (
-            <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface-card)] p-4 shadow-xs">
+            <button
+              type="button"
+              onClick={() => handleSelectFilter("REVISAO")}
+              aria-pressed={filter === "REVISAO"}
+              className={`rounded-2xl border bg-[var(--color-surface-card)] p-4 text-left shadow-xs transition-all hover:border-slate-300 dark:hover:border-slate-600 ${
+                filter === "REVISAO"
+                  ? "border-[var(--color-primary)] ring-2 ring-[var(--color-primary)]"
+                  : "border-[var(--color-border)]"
+              }`}
+            >
               <div className="flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
                   Para revisar
@@ -956,20 +976,16 @@ export default function DashboardPage() {
               <p className="mt-2 text-2xl font-bold text-[var(--color-text-main)]">
                 {stats.review}
               </p>
-            </div>
+            </button>
           )}
         </section>
 
-        {/* Main Content Grid */}
-        <div
-          className={`grid grid-cols-1 gap-6 ${
-            isAdmin ? "xl:grid-cols-12" : ""
-          }`}
-        >
+        {/* Main Content */}
+        <div>
           {/* Queue Column */}
-          <div className={isAdmin ? "xl:col-span-8" : ""}>
+          <div>
             {/* Search Bar + Quick Refresh */}
-            <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="mb-4 flex flex-wrap items-center gap-2">
               <div className="relative min-w-[220px] flex-1">
                 <Search
                   className="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-[var(--color-text-muted)]"
@@ -1008,51 +1024,6 @@ export default function DashboardPage() {
                 />
                 <span>Atualizar</span>
               </button>
-            </div>
-
-            {/* Filter Tabs Bar (Desktop only so mobile sees orders immediately) */}
-            <div className="mb-4 hidden flex-wrap items-center justify-between gap-3 md:flex">
-              <div
-                className="flex flex-wrap items-center gap-1.5"
-                role="group"
-                aria-label="Filtrar pedidos por status"
-              >
-                {filterPills.map((pill) => {
-                  const active = filter === pill.id;
-                  const showBadge =
-                    typeof pill.badge === "number" &&
-                    (pill.id === "PENDENTE" ||
-                      pill.id === "ATRASADOS" ||
-                      pill.badge > 0);
-                  return (
-                    <button
-                      key={pill.id}
-                      type="button"
-                      onClick={() => handleSelectFilter(pill.id)}
-                      className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-all ${
-                        active
-                          ? "bg-[#B91C1C] text-white shadow-xs"
-                          : "border border-[var(--color-border)] bg-[var(--color-surface-card)] text-[var(--color-text-muted)] hover:bg-slate-100 dark:hover:bg-slate-800"
-                      }`}
-                    >
-                      <span>{pill.label}</span>
-                      {showBadge && (
-                        <span
-                          className={`rounded-full px-1.5 py-0.2 text-[11px] font-bold ${
-                            active
-                              ? "bg-white text-[#B91C1C]"
-                              : pill.id === "ATRASADOS" && (pill.badge ?? 0) > 0
-                                ? "bg-red-600 text-white"
-                                : "bg-[#B91C1C] text-white"
-                          }`}
-                        >
-                          {pill.badge}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
             </div>
 
             {/* Batch Selection Bar (Admin) */}
@@ -1126,17 +1097,10 @@ export default function DashboardPage() {
               onDropReorder={handleDropReorder}
             />
           </div>
-
-          {/* Admin Sidebar */}
-          {isAdmin && (
-            <aside className="space-y-6 xl:col-span-4">
-              <RegistrationRequestsPanel />
-              <UserManagementPanel />
-            </aside>
-          )}
         </div>
       </main>
 
+      {isAdmin && <TeamHoverDrawer />}
       <NotificationToast toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

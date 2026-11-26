@@ -18,7 +18,6 @@ import {
   Link2,
   Loader2,
   Lock,
-  MessageCircle,
   MessageSquareText,
   Package,
   Phone,
@@ -61,7 +60,7 @@ interface OrderQueueProps {
   expandedOrderId: string | null;
   onToggleExpand: (orderId: string | null) => void;
   onToggleSelect: (orderId: string) => void;
-  onStatusChange: (orderId: string, status: OrderStatus) => Promise<void>;
+  onStatusChange?: (orderId: string, status: OrderStatus) => Promise<void>;
   onUpdateOrder: (orderId: string, updates: OrderUpdatePayload) => Promise<void>;
   onLinkCompany: (orderId: string, companyId: string) => Promise<void>;
   onCompleteWithUndo: (order: OrderItem) => Promise<void>;
@@ -102,21 +101,6 @@ const CONTAINER_LABELS: Record<
   },
 };
 
-const STATUS_OPTIONS: { value: OrderStatus; label: string }[] = [
-  { value: "PENDENTE", label: "Pendente" },
-  { value: "CONCLUIDO", label: "Concluído" },
-  { value: "CANCELADO", label: "Cancelado" },
-];
-
-const STATUS_COLORS: Record<OrderStatus, string> = {
-  PENDENTE:
-    "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200",
-  CONCLUIDO:
-    "border-[#15803D]/40 bg-green-50 text-[#15803D] dark:border-green-800 dark:bg-green-950/50 dark:text-green-200",
-  CANCELADO:
-    "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300",
-};
-
 function formatDateTime(iso: string): string {
   try {
     return new Intl.DateTimeFormat("pt-BR", {
@@ -124,6 +108,29 @@ function formatDateTime(iso: string): string {
       month: "2-digit",
       hour: "2-digit",
       minute: "2-digit",
+    }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
+
+function formatShortDate(iso: string): string {
+  try {
+    return new Intl.DateTimeFormat("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+    }).format(new Date(iso));
+  } catch {
+    return iso;
+  }
+}
+
+function formatShortScheduledDate(iso: string): string {
+  try {
+    return new Intl.DateTimeFormat("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      timeZone: "UTC",
     }).format(new Date(iso));
   } catch {
     return iso;
@@ -196,7 +203,6 @@ export function OrderQueue({
   expandedOrderId,
   onToggleExpand,
   onToggleSelect,
-  onStatusChange,
   onUpdateOrder,
   onLinkCompany,
   onCompleteWithUndo,
@@ -341,15 +347,6 @@ export function OrderQueue({
     }
   }
 
-  async function handleStatus(orderId: string, nextStatus: OrderStatus) {
-    setBusyOrderId(orderId);
-    try {
-      await onStatusChange(orderId, nextStatus);
-    } finally {
-      setBusyOrderId(null);
-    }
-  }
-
   async function handleLink(orderId: string) {
     const companyId = selectedCompanies[orderId];
     if (!companyId) return;
@@ -406,7 +403,11 @@ export function OrderQueue({
         ))}
       </datalist>
 
-      <div className="space-y-3" role="list" aria-label="Fila de pedidos">
+      <div
+        className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
+        role="list"
+        aria-label="Fila de pedidos"
+      >
         {orders.map((order, index) => {
           const actionMeta =
             ACTION_BADGES[order.actionType] ?? ACTION_BADGES.COLETA;
@@ -428,17 +429,16 @@ export function OrderQueue({
             Boolean(schedYmd) &&
             schedYmd < todayStr;
 
-          const phoneDigits = order.requesterPhone
-            ? order.requesterPhone.replace(/\D/g, "")
-            : "";
-          const waPhone = phoneDigits
-            ? phoneDigits.startsWith("55")
-              ? phoneDigits
-              : `55${phoneDigits}`
-            : "";
-          const waStatusText = encodeURIComponent(
-            `Olá ${order.requesterName}, sua solicitação na Schifter Coletas foi atualizada.`
-          );
+          const contactLabel =
+            order.requesterName &&
+            order.requesterName.trim() !== "" &&
+            order.requesterName.trim() !== "Solicitante WhatsApp"
+              ? order.requesterName
+              : order.requesterPhone || "Sem telefone";
+
+          const mobileDateLabel = order.scheduledDate
+            ? formatShortScheduledDate(order.scheduledDate)
+            : formatShortDate(order.createdAt);
 
           const borderClass = isDragging
             ? "scale-[0.99] border-[#B91C1C] opacity-50"
@@ -494,16 +494,16 @@ export function OrderQueue({
                 setDraggedId(null);
                 setDragOverId(null);
               }}
-              className={`group cursor-pointer rounded-2xl bg-[var(--color-surface-card)] p-4 shadow-xs transition-all sm:p-5 ${borderClass} ${focusRingClass}`}
+              className={`group flex h-full cursor-pointer flex-col justify-between rounded-2xl bg-[var(--color-surface-card)] p-4 shadow-xs transition-all sm:p-5 ${borderClass} ${focusRingClass}`}
             >
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                {/* Left: Checkbox + Drag handle + Priority + Core Info */}
-                <div className="flex min-w-0 flex-1 items-start gap-3">
-                  {/* Admin Batch Checkbox + Reorder Controls */}
+              <div className="flex flex-1 flex-col justify-between gap-3">
+                {/* Top: Admin Reorder Controls (desktop) + Core Info */}
+                <div className="flex min-w-0 items-start gap-3">
+                  {/* Admin Batch Checkbox + Reorder Controls (hidden on < md) */}
                   {isAdmin && (
                     <div
                       data-no-expand="true"
-                      className="flex shrink-0 flex-col items-center gap-1 pt-0.5"
+                      className="hidden shrink-0 flex-col items-center gap-1 pt-0.5 md:flex"
                     >
                       <input
                         type="checkbox"
@@ -544,32 +544,49 @@ export function OrderQueue({
                   <div className="min-w-0 flex-1 space-y-2.5">
                     {/* Top Badges Row */}
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="inline-flex items-center rounded-lg bg-[#1E293B] px-2.5 py-1 text-xs font-bold text-white dark:bg-slate-100 dark:text-[#090D16]">
+                      <span className="hidden items-center rounded-lg bg-[#1E293B] px-2.5 py-1 text-xs font-bold text-white md:inline-flex dark:bg-slate-100 dark:text-[#090D16]">
                         #{order.priorityOrder}
                       </span>
 
                       <span
-                        className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1 text-base font-extrabold sm:text-lg ${actionMeta.className}`}
+                        className={`inline-flex items-center gap-1.5 rounded-xl border px-2.5 py-1 text-sm font-extrabold sm:px-3 sm:text-base ${actionMeta.className}`}
                       >
                         {actionMeta.icon}
                         <span>{actionMeta.label}</span>
                       </span>
 
-                      <span className="inline-flex items-center gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-main)] px-3 py-1 text-base font-extrabold text-[var(--color-text-main)] sm:text-lg dark:border-slate-600/80 dark:bg-[#090D16]">
+                      <span className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-main)] px-2.5 py-1 text-sm font-extrabold text-[var(--color-text-main)] sm:px-3 sm:text-base dark:border-slate-600/80 dark:bg-[#090D16]">
                         {containerMeta.icon}
-                        <span className="rounded-md bg-[var(--color-primary)] px-2 py-0.5 text-base font-extrabold text-white sm:text-lg">
+                        <span className="rounded-md bg-[var(--color-primary)] px-1.5 py-0.5 text-sm font-extrabold text-white sm:px-2 sm:text-base">
                           {order.quantity}x
                         </span>
                         <span>{containerMeta.label}</span>
                       </span>
 
-                      <span className="inline-flex items-center gap-1 text-xs text-[var(--color-text-muted)]">
+                      {/* Mobile Ultra-Objective Date */}
+                      <span
+                        className={`inline-flex items-center gap-1 text-xs font-semibold md:hidden ${
+                          order.scheduledDate
+                            ? "rounded-full border border-[#B91C1C]/30 bg-[#B91C1C]/10 px-2 py-0.5 text-[#B91C1C] dark:border-red-800 dark:bg-red-950/50 dark:text-red-300"
+                            : "text-[var(--color-text-muted)]"
+                        }`}
+                      >
+                        {order.scheduledDate ? (
+                          <Calendar className="h-3 w-3" aria-hidden="true" />
+                        ) : (
+                          <Clock className="h-3 w-3" aria-hidden="true" />
+                        )}
+                        <span>{mobileDateLabel}</span>
+                      </span>
+
+                      {/* Desktop Metadata Badges */}
+                      <span className="hidden items-center gap-1 text-xs text-[var(--color-text-muted)] md:inline-flex">
                         <Clock className="h-3.5 w-3.5" aria-hidden="true" />
                         <span>{formatDateTime(order.createdAt)}</span>
                       </span>
 
                       {order.scheduledDate && (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-[#B91C1C]/30 bg-[#B91C1C]/10 px-2.5 py-0.5 text-[11px] font-semibold text-[#B91C1C] dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
+                        <span className="hidden items-center gap-1 rounded-full border border-[#B91C1C]/30 bg-[#B91C1C]/10 px-2.5 py-0.5 text-[11px] font-semibold text-[#B91C1C] md:inline-flex dark:border-red-800 dark:bg-red-950/50 dark:text-red-300">
                           <Calendar className="h-3 w-3" aria-hidden="true" />
                           <span>
                             Agendada:{" "}
@@ -579,7 +596,7 @@ export function OrderQueue({
                       )}
 
                       {isOverdue && (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-red-600 bg-red-600 px-2.5 py-0.5 text-[11px] font-bold text-white dark:border-red-500 dark:bg-red-600">
+                        <span className="hidden items-center gap-1 rounded-full border border-red-600 bg-red-600 px-2.5 py-0.5 text-[11px] font-bold text-white md:inline-flex dark:border-red-500 dark:bg-red-600">
                           <AlertTriangle
                             className="h-3 w-3"
                             aria-hidden="true"
@@ -589,14 +606,14 @@ export function OrderQueue({
                       )}
 
                       {order.truckUsed && (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-[var(--color-border)] bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-[#1E293B] dark:bg-slate-800 dark:text-slate-200">
+                        <span className="hidden items-center gap-1 rounded-full border border-[var(--color-border)] bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-[#1E293B] md:inline-flex dark:bg-slate-800 dark:text-slate-200">
                           <Truck className="h-3 w-3" aria-hidden="true" />
                           <span>Caminhão: {order.truckUsed}</span>
                         </span>
                       )}
 
                       {order.collectedBy && (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-[#15803D]/30 bg-green-50 px-2.5 py-0.5 text-[11px] font-semibold text-[#15803D] dark:border-green-800 dark:bg-green-950/50 dark:text-green-300">
+                        <span className="hidden items-center gap-1 rounded-full border border-[#15803D]/30 bg-green-50 px-2.5 py-0.5 text-[11px] font-semibold text-[#15803D] md:inline-flex dark:border-green-800 dark:bg-green-950/50 dark:text-green-300">
                           <User className="h-3 w-3" aria-hidden="true" />
                           <span>Por: {order.collectedBy}</span>
                         </span>
@@ -605,7 +622,7 @@ export function OrderQueue({
                       {order.manuallyEdited && (
                         <span
                           title="Card editado manualmente (protegido contra sobrescrita automática)"
-                          className="inline-flex items-center gap-1 rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-[#334155] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                          className="hidden items-center gap-1 rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-[#334155] md:inline-flex dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
                         >
                           <Lock className="h-2.5 w-2.5" aria-hidden="true" />
                           <span>Protegido (editado)</span>
@@ -616,21 +633,29 @@ export function OrderQueue({
                     {/* Company or Needs Review Alert */}
                     {isUnlinked ? (
                       <div className="rounded-xl border border-amber-200 bg-amber-50/90 p-3 dark:border-amber-800/70 dark:bg-amber-950/40">
-                        <div className="flex flex-wrap items-center gap-2 text-lg font-bold text-amber-900 sm:text-xl dark:text-amber-200">
+                        <div className="flex flex-wrap items-center gap-2 text-base font-bold text-amber-900 sm:text-lg dark:text-amber-200">
                           <AlertTriangle
                             className="h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400"
                             aria-hidden="true"
                           />
                           <span>Empresa não identificada — Revisar</span>
                           {order.companyFallbackNote && (
-                            <span className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                            <span
+                              className={`text-xs font-medium text-amber-800 dark:text-amber-300 ${
+                                isExpanded ? "inline" : "hidden md:inline"
+                              }`}
+                            >
                               ({order.companyFallbackNote})
                             </span>
                           )}
                         </div>
 
                         {isAdmin && (
-                          <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                          <div
+                            className={`mt-2.5 flex-wrap items-center gap-2 ${
+                              isExpanded ? "flex" : "hidden md:flex"
+                            }`}
+                          >
                             <select
                               aria-label="Selecionar empresa para vincular"
                               value={selectedCompanies[order.id] ?? ""}
@@ -640,7 +665,7 @@ export function OrderQueue({
                                   [order.id]: e.target.value,
                                 }))
                               }
-                              className="min-w-[200px] flex-1 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 dark:border-amber-800 dark:bg-slate-900 dark:text-slate-100"
+                              className="min-w-[180px] flex-1 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 dark:border-amber-800 dark:bg-slate-900 dark:text-slate-100"
                             >
                               <option value="">
                                 Selecione uma empresa cadastrada...
@@ -680,8 +705,7 @@ export function OrderQueue({
                                   aria-hidden="true"
                                 />
                                 <span>
-                                  Vincular empresa e salvar este telefone como
-                                  contato
+                                  Vincular e salvar telefone
                                 </span>
                               </button>
                             )}
@@ -690,7 +714,7 @@ export function OrderQueue({
                       </div>
                     ) : (
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                        <span className="inline-flex items-center gap-2 text-lg font-bold text-[var(--color-text-main)] sm:text-xl">
+                        <span className="inline-flex items-center gap-2 text-base font-bold text-[var(--color-text-main)] sm:text-lg">
                           <Building2
                             className="h-5 w-5 shrink-0 text-[var(--color-primary)] dark:text-red-400"
                             aria-hidden="true"
@@ -698,85 +722,53 @@ export function OrderQueue({
                           <span>{order.company?.name}</span>
                         </span>
                         {order.company?.address && (
-                          <span className="text-xs text-[var(--color-text-muted)]">
+                          <span
+                            className={`text-xs text-[var(--color-text-muted)] ${
+                              isExpanded ? "inline" : "hidden md:inline"
+                            }`}
+                          >
                             {order.company.address}
                           </span>
                         )}
                       </div>
                     )}
 
-                    {/* Requester + 1-Tap Contact Links */}
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-[var(--color-text-muted)]">
-                      <span className="inline-flex items-center gap-1.5 font-medium text-[var(--color-text-main)]">
-                        <User
-                          className="h-3.5 w-3.5 text-[var(--color-text-muted)]"
-                          aria-hidden="true"
-                        />
-                        <span>{order.requesterName}</span>
+                    {/* Clean Contact Area */}
+                    <div
+                      className={`items-center gap-1.5 text-xs text-[var(--color-text-muted)] ${
+                        isExpanded ? "flex" : "hidden md:flex"
+                      }`}
+                    >
+                      <User
+                        className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-muted)]"
+                        aria-hidden="true"
+                      />
+                      <span className="truncate font-medium text-[var(--color-text-main)]">
+                        {contactLabel}
                       </span>
-
-                      {order.requesterPhone && phoneDigits && (
-                        <div
-                          data-no-expand="true"
-                          className="flex flex-wrap items-center gap-1.5"
-                        >
-                          <a
-                            href={`tel:${phoneDigits}`}
-                            onClick={(e) => e.stopPropagation()}
-                            className="inline-flex items-center gap-1 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-main)] px-2 py-0.5 font-mono text-xs font-medium text-[var(--color-text-main)] hover:bg-slate-100 dark:hover:bg-slate-800"
-                            title="Ligar para solicitante"
-                          >
-                            <Phone className="h-3 w-3" aria-hidden="true" />
-                            <span>{order.requesterPhone}</span>
-                          </a>
-
-                          <a
-                            href={`https://wa.me/${waPhone}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="inline-flex items-center gap-1 rounded-lg border border-[#15803D]/30 bg-green-50 px-2 py-0.5 text-xs font-semibold text-[#15803D] hover:bg-green-100 dark:border-green-800 dark:bg-green-950/50 dark:text-green-300 dark:hover:bg-green-950"
-                            title="Abrir conversa no WhatsApp"
-                          >
-                            <MessageCircle
-                              className="h-3 w-3"
-                              aria-hidden="true"
-                            />
-                            <span>WhatsApp</span>
-                          </a>
-
-                          <a
-                            href={`https://wa.me/${waPhone}?text=${waStatusText}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="inline-flex items-center gap-1 rounded-lg border border-sky-300 bg-sky-50 px-2 py-0.5 text-xs font-semibold text-sky-800 hover:bg-sky-100 dark:border-sky-800 dark:bg-sky-950/50 dark:text-sky-300 dark:hover:bg-sky-950"
-                            title="Enviar atualização de status via WhatsApp"
-                          >
-                            <MessageSquareText
-                              className="h-3 w-3"
-                              aria-hidden="true"
-                            />
-                            <span>Avisar status</span>
-                          </a>
-                        </div>
-                      )}
                     </div>
 
-                    <div className="flex items-start gap-2 rounded-xl bg-[var(--color-bg-main)] px-3 py-2 text-xs text-[var(--color-text-main)]">
+                    {/* Raw Message Preview */}
+                    <div
+                      className={`items-start gap-2 rounded-xl bg-[var(--color-bg-main)] px-3 py-2 text-xs text-[var(--color-text-main)] ${
+                        isExpanded ? "flex" : "hidden md:flex"
+                      }`}
+                    >
                       <MessageSquareText
                         className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#15803D] dark:text-green-400"
                         aria-hidden="true"
                       />
-                      <p className="italic">&ldquo;{order.rawMessage}&rdquo;</p>
+                      <p className="line-clamp-3 italic">
+                        &ldquo;{order.rawMessage}&rdquo;
+                      </p>
                     </div>
                   </div>
                 </div>
 
-                {/* Right: Direct Complete + Status Selector + Expand Toggle + Admin Delete */}
-                <div className="flex shrink-0 flex-row flex-wrap items-center justify-between gap-2 border-t border-[var(--color-border)] pt-3 lg:flex-col lg:items-end lg:border-t-0 lg:pt-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    {order.status !== "CONCLUIDO" && (
+                {/* Bottom Actions Row: Direct Complete + Expand Toggle + Admin Delete */}
+                <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--color-border)] pt-3">
+                  <div className="flex items-center gap-2">
+                    {order.status !== "CONCLUIDO" ? (
                       <button
                         type="button"
                         disabled={isBusy}
@@ -786,7 +778,7 @@ export function OrderQueue({
                         }}
                         title="Concluir pedido"
                         aria-label={`Concluir pedido #${order.priorityOrder}`}
-                        className="inline-flex items-center gap-1 rounded-xl bg-[#15803D] px-3 py-1.5 text-xs font-semibold text-white shadow-2xs hover:bg-[#166534] disabled:opacity-60"
+                        className="inline-flex items-center gap-1.5 rounded-xl bg-[#15803D] px-3 py-1.5 text-xs font-semibold text-white shadow-2xs hover:bg-[#166534] disabled:opacity-60"
                       >
                         <CheckCircle2
                           className="h-3.5 w-3.5"
@@ -794,32 +786,35 @@ export function OrderQueue({
                         />
                         <span>Concluir</span>
                       </button>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-xs font-semibold text-[#15803D] dark:text-green-400">
+                        <CheckCircle2
+                          className="h-3.5 w-3.5"
+                          aria-hidden="true"
+                        />
+                        <span>Finalizado</span>
+                      </span>
                     )}
+                  </div>
 
-                    <label
-                      htmlFor={`status-${order.id}`}
-                      className="text-xs font-medium text-[var(--color-text-muted)] lg:sr-only"
-                    >
-                      Status
-                    </label>
-                    <select
-                      id={`status-${order.id}`}
-                      value={order.status}
-                      disabled={isBusy}
-                      onChange={(e) =>
-                        void handleStatus(
-                          order.id,
-                          e.target.value as OrderStatus
-                        )
-                      }
-                      className={`rounded-xl border px-3 py-1.5 text-xs font-semibold focus:outline-none disabled:opacity-60 ${STATUS_COLORS[order.status]}`}
-                    >
-                      {STATUS_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
+                  <div className="flex items-center gap-1.5">
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        disabled={isBusy}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void onDeleteWithUndo(order);
+                        }}
+                        title="Excluir pedido"
+                        aria-label={`Excluir pedido #${order.priorityOrder}`}
+                        className={`items-center gap-1 rounded-lg border border-transparent px-2 py-1 text-xs font-medium text-[var(--color-text-muted)] hover:border-red-200 hover:bg-red-50 hover:text-[#B91C1C] disabled:opacity-50 dark:hover:border-red-900/60 dark:hover:bg-red-950/50 dark:hover:text-red-400 ${
+                          isExpanded ? "inline-flex" : "hidden md:inline-flex"
+                        }`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      </button>
+                    )}
 
                     <button
                       type="button"
@@ -847,33 +842,6 @@ export function OrderQueue({
                       </span>
                     </button>
                   </div>
-
-                  {order.status === "CONCLUIDO" && (
-                    <span className="hidden items-center gap-1 text-[11px] font-semibold text-[#15803D] lg:inline-flex dark:text-green-400">
-                      <CheckCircle2
-                        className="h-3.5 w-3.5"
-                        aria-hidden="true"
-                      />
-                      <span>Finalizado</span>
-                    </span>
-                  )}
-
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      disabled={isBusy}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void onDeleteWithUndo(order);
-                      }}
-                      title="Excluir pedido"
-                      aria-label={`Excluir pedido #${order.priorityOrder}`}
-                      className="inline-flex items-center gap-1 rounded-lg border border-transparent px-2 py-1 text-xs font-medium text-[var(--color-text-muted)] hover:border-red-200 hover:bg-red-50 hover:text-[#B91C1C] disabled:opacity-50 dark:hover:border-red-900/60 dark:hover:bg-red-950/50 dark:hover:text-red-400"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                      <span className="lg:hidden">Excluir</span>
-                    </button>
-                  )}
                 </div>
               </div>
 
