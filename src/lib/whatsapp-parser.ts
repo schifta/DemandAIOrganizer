@@ -6,6 +6,9 @@ export type ParsedWhatsAppMessage = {
   senderName: string;
   text: string;
   provider: WhatsAppProvider;
+  isAudio?: boolean;
+  audioMimeType?: string;
+  evolutionMessageKey?: Record<string, unknown>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -69,13 +72,42 @@ function parseEvolutionPayload(
     return null;
   }
 
+  const rawRemoteJid = key ? asNonEmptyString(key.remoteJid) : null;
+  const keyParticipant = key ? asNonEmptyString(key.participant) : null;
+  const dataParticipant = asNonEmptyString(data.participant);
+
+  // Strict group & broadcast block: never process or reply to group messages
+  if (
+    rawRemoteJid?.toLowerCase().endsWith("@g.us") ||
+    rawRemoteJid?.toLowerCase() === "status@broadcast" ||
+    keyParticipant !== null ||
+    dataParticipant !== null
+  ) {
+    return null;
+  }
+
   const message = isRecord(data.message) ? data.message : null;
   const text = message ? extractEvolutionText(message) : null;
-  if (!text) return null;
-
-  const rawRemoteJid = key ? asNonEmptyString(key.remoteJid) : null;
   const rawPhone = rawRemoteJid ?? asNonEmptyString(body.sender) ?? "";
   const senderName = asNonEmptyString(data.pushName) ?? "";
+
+  if (!text) {
+    if (message && isRecord(message.audioMessage)) {
+      const audioMimeType =
+        asNonEmptyString(message.audioMessage.mimetype) ?? "audio/ogg";
+      return {
+        phone: normalizePhone(rawPhone),
+        ...(rawRemoteJid ? { remoteJid: rawRemoteJid } : {}),
+        senderName,
+        text: "",
+        provider: "evolution",
+        isAudio: true,
+        audioMimeType,
+        ...(key ? { evolutionMessageKey: key } : {}),
+      };
+    }
+    return null;
+  }
 
   return {
     phone: normalizePhone(rawPhone),

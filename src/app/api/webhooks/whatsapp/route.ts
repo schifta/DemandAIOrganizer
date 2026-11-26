@@ -3,7 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { parseWhatsAppPayload, normalizePhone } from "@/lib/whatsapp-parser";
 import {
   extractOrderWithNLP,
+  extractOrderFromAudioWithGemini,
   matchCompanyWithGemini,
+  ExtractedOrderData,
 } from "@/lib/nlp-extractor";
 import { emitNewOrder } from "@/lib/order-events";
 import { filterAiUpdatePayload } from "@/lib/ai-guard";
@@ -89,6 +91,60 @@ async function sendEvolutionText(
   } catch (error) {
     console.error("Evolution API sendText error:", error);
     return false;
+  }
+}
+
+async function fetchEvolutionAudioBase64(
+  messageKey: Record<string, unknown>
+): Promise<{ base64: string; mimeType: string } | null> {
+  const baseUrl = process.env.EVOLUTION_API_URL?.trim().replace(/\/+$/, "");
+  const apiKey = process.env.EVOLUTION_API_KEY?.trim();
+  const instance = process.env.EVOLUTION_INSTANCE?.trim();
+
+  if (!baseUrl || !apiKey || !instance) {
+    return null;
+  }
+
+  try {
+    const endpoint = `${baseUrl}/chat/getBase64FromMediaMessage/${encodeURIComponent(
+      instance
+    )}`;
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: apiKey,
+      },
+      signal: AbortSignal.timeout(15000),
+      body: JSON.stringify({
+        message: { key: messageKey },
+        convertToMp4: false,
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(
+        `Evolution API getBase64FromMediaMessage failed with status ${response.status}`
+      );
+      return null;
+    }
+
+    const json: unknown = await response.json();
+    if (typeof json !== "object" || json === null) return null;
+    const record = json as Record<string, unknown>;
+    const base64 =
+      typeof record.base64 === "string" ? record.base64.trim() : "";
+    if (!base64) return null;
+
+    const mimeType =
+      typeof record.mimetype === "string" && record.mimetype.trim()
+        ? record.mimetype.trim()
+        : "audio/ogg";
+
+    return { base64, mimeType };
+  } catch (error) {
+    console.error("Evolution API getBase64FromMediaMessage error:", error);
+    return null;
   }
 }
 
@@ -375,12 +431,84 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
+  // Strict top-level group block (e.g., @g.us or participant present)
+  if (typeof body === "object" && body !== null && "data" in body) {
+    const data = (body as { data?: unknown }).data;
+    if (typeof data === "object" && data !== null) {
+      const dataRec = data as Record<string, unknown>;
+      const key =
+        typeof dataRec.key === "object" && dataRec.key !== null
+          ? (dataRec.key as Record<string, unknown>)
+          : null;
+      const remoteJid =
+        key && typeof key.remoteJid === "string" ? key.remoteJid.trim() : "";
+      const keyParticipant =
+        key && typeof key.participant === "string"
+          ? key.participant.trim()
+          : "";
+      const dataParticipant =
+        typeof dataRec.participant === "string"
+          ? dataRec.participant.trim()
+          : "";
+
+      if (
+        remoteJid.toLowerCase().endsWith("@g.us") ||
+        remoteJid.toLowerCase() === "status@broadcast" ||
+        keyParticipant.length > 0 ||
+        dataParticipant.length > 0
+      ) {
+        return NextResponse.json(
+          { ignored: true, reason: "Mensagem de grupo ignorada" },
+          { status: 200 }
+        );
+      }
+    }
+  }
+
   const parsed = parseWhatsAppPayload(body);
   if (!parsed) {
     return NextResponse.json(
-      { ignored: true, reason: "No text message found" },
+      { ignored: true, reason: "No text or audio message found" },
       { status: 200 }
     );
+  }
+
+  let messageText = parsed.text;
+  let audioExtracted: (ExtractedOrderData & { transcript: string }) | null =
+    null;
+
+  if (parsed.isAudio) {
+    if (!parsed.evolutionMessageKey) {
+      return NextResponse.json(
+        { ignored: true, reason: "Chave da mensagem de áudio ausente" },
+        { status: 200 }
+      );
+    }
+
+    const audioMedia = await fetchEvolutionAudioBase64(
+      parsed.evolutionMessageKey
+    );
+    if (!audioMedia) {
+      return NextResponse.json(
+        { ignored: true, reason: "Não foi possível obter áudio da Evolution API" },
+        { status: 200 }
+      );
+    }
+
+    audioExtracted = await extractOrderFromAudioWithGemini({
+      audioBase64: audioMedia.base64,
+      mimeType: parsed.audioMimeType || audioMedia.mimeType,
+      fallbackSenderName: parsed.senderName,
+    });
+
+    if (!audioExtracted) {
+      return NextResponse.json(
+        { ignored: true, reason: "Não foi possível transcrever áudio com Gemini" },
+        { status: 200 }
+      );
+    }
+
+    messageText = audioExtracted.transcript || "[Áudio WhatsApp]";
   }
 
   if (parsed.phone) {
@@ -393,8 +521,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           {
             phone: parsed.phone,
             requesterName: parsed.senderName,
-            companyHint: parsed.text,
-            rawText: parsed.text,
+            companyHint: messageText,
+            rawText: messageText,
           }
         );
 
@@ -427,7 +555,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         if (officeGroupJid) {
           await sendEvolutionText(
             officeGroupJid,
-            `⚠️ Atenção Escritório: O contato ${pending.senderName || parsed.phone} (${parsed.phone}) solicitou uma coleta ("${pending.rawMessage}"), pedimos o nome da empresa e ele respondeu "${parsed.text}", mas não foi possível identificar automaticamente. Verificar no painel.`
+            `⚠️ Atenção Escritório: O contato ${pending.senderName || parsed.phone} (${parsed.phone}) solicitou uma coleta ("${pending.rawMessage}"), pedimos o nome da empresa e ele respondeu "${messageText}", mas não foi possível identificar automaticamente. Verificar no painel.`
           );
         }
 
@@ -441,7 +569,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
   }
 
-  const extracted = await extractOrderWithNLP(parsed.text, parsed.senderName);
+  const extracted: ExtractedOrderData =
+    audioExtracted ?? (await extractOrderWithNLP(messageText, parsed.senderName));
 
   if (!extracted.isOrderRequest) {
     return NextResponse.json(
@@ -458,7 +587,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     phone: parsed.phone,
     requesterName: extracted.requesterName,
     companyHint: extracted.companyHint,
-    rawText: parsed.text,
+    rawText: messageText,
   });
 
   const needsReview = companyId === null;
@@ -576,7 +705,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         actionType: item.actionType,
         containerType: item.containerType,
         quantity: item.quantity,
-        rawMessage: parsed.text,
+        rawMessage: messageText,
         status: "PENDENTE",
         priorityOrder: nextPriority + i,
         needsReview,
@@ -602,7 +731,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         phone: parsed.phone,
         remoteJid: parsed.remoteJid,
         senderName: extracted.requesterName,
-        rawMessage: parsed.text,
+        rawMessage: messageText,
         createdAt: Date.now(),
       });
     }

@@ -804,3 +804,138 @@ export async function matchCompanyWithGemini(params: {
     return null;
   }
 }
+
+export async function extractOrderFromAudioWithGemini(params: {
+  audioBase64: string;
+  mimeType: string;
+  fallbackSenderName?: string;
+}): Promise<(ExtractedOrderData & { transcript: string }) | null> {
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
+  if (!apiKey || !params.audioBase64.trim()) return null;
+
+  const cleanBase64 = params.audioBase64
+    .trim()
+    .replace(/^data:[^;]+;base64,/i, "");
+  const cleanMimeType =
+    params.mimeType.split(";")[0]?.trim() || "audio/ogg";
+
+  const prompt = [
+    "Você recebeu um áudio de WhatsApp em português de um cliente/fornecedor da empresa de reciclagem Schifter Coletas.",
+    "1. Transcreva fielmente o áudio no campo \"transcript\".",
+    "2. Analise se é um pedido real de coleta, troca, agendamento, retirada ou envio de caixas/caçambas/tambores/resíduos.",
+    "Regras obrigatórias:",
+    '- Saudações ou mensagens curtas sem intenção clara de pedido ("Oi", "Olá", "Bom dia", "Ok", "Tudo bem?", "Obrigado") DEVEM retornar "isOrderRequest": false.',
+    '- Abreviações faladas ou equivalentes: tambor/bombona => "TAMBOR", caixa/caçamba => "CAIXA_CACAMBA".',
+    '- Se o áudio pedir múltiplos tipos de recipientes (ex: "1 caixa e 5 tambores"), inclua cada um como item separado no array "items" e mantenha actionType, containerType e quantity iguais ao primeiro item.',
+    `Nome do remetente no WhatsApp (fallback): ${params.fallbackSenderName?.trim() || "não informado"}`,
+    "Responda EXCLUSIVAMENTE em JSON válido.",
+  ].join("\n");
+
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
+      apiKey
+    )}`;
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(20000),
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: prompt },
+              {
+                inlineData: {
+                  mimeType: cleanMimeType,
+                  data: cleanBase64,
+                },
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              transcript: { type: "STRING" },
+              isOrderRequest: { type: "BOOLEAN" },
+              requesterName: { type: "STRING" },
+              companyHint: { type: "STRING", nullable: true },
+              actionType: { type: "STRING", enum: ["TROCA", "COLETA"] },
+              containerType: {
+                type: "STRING",
+                enum: ["CAIXA_CACAMBA", "TAMBOR"],
+              },
+              quantity: { type: "INTEGER" },
+              items: {
+                type: "ARRAY",
+                items: {
+                  type: "OBJECT",
+                  properties: {
+                    actionType: { type: "STRING", enum: ["TROCA", "COLETA"] },
+                    containerType: {
+                      type: "STRING",
+                      enum: ["CAIXA_CACAMBA", "TAMBOR"],
+                    },
+                    quantity: { type: "INTEGER" },
+                  },
+                  required: ["actionType", "containerType", "quantity"],
+                },
+              },
+            },
+            required: [
+              "transcript",
+              "isOrderRequest",
+              "requesterName",
+              "companyHint",
+              "actionType",
+              "containerType",
+              "quantity",
+              "items",
+            ],
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) return null;
+
+    const json: unknown = await response.json();
+    if (!isRecord(json) || !Array.isArray(json.candidates)) return null;
+
+    const firstCandidate = json.candidates[0];
+    if (!isRecord(firstCandidate) || !isRecord(firstCandidate.content)) {
+      return null;
+    }
+
+    const parts = firstCandidate.content.parts;
+    if (!Array.isArray(parts) || !isRecord(parts[0])) return null;
+
+    const rawText = parts[0].text;
+    if (typeof rawText !== "string") return null;
+
+    const parsed: unknown = JSON.parse(rawText);
+    if (!isRecord(parsed)) return null;
+
+    const transcript =
+      typeof parsed.transcript === "string" ? parsed.transcript.trim() : "";
+
+    const sanitized = sanitizeExtractedData(
+      parsed,
+      transcript,
+      params.fallbackSenderName
+    );
+    if (!sanitized) return null;
+
+    return {
+      ...sanitized,
+      transcript,
+    };
+  } catch {
+    return null;
+  }
+}
